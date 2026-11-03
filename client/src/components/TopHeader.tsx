@@ -3,20 +3,23 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
+  Cpu,
   Download,
   FilePlus2,
   FolderOpen,
   Mic,
   Monitor,
   Redo2,
+  RefreshCw,
   Smartphone,
   Sparkles,
   Trash2,
   Undo2,
   Upload,
   Wand2,
+  Zap,
 } from 'lucide-react';
-import { AspectRatio, ProjectData } from '@shared/schema';
+import { AspectRatio, HardwareAccelerationReport, ProjectData } from '@shared/schema';
 import { ProjectSummary } from '../api';
 
 export type WorkspaceLayout = 'vertical' | 'horizontal';
@@ -24,6 +27,9 @@ export type WorkspaceLayout = 'vertical' | 'horizontal';
 interface Props {
   project: ProjectData;
   projects: ProjectSummary[];
+  hardware: HardwareAccelerationReport | null;
+  probingHardware?: boolean;
+  onRefreshHardware?: () => void;
   workspaceLayout: WorkspaceLayout;
   canUndo: boolean;
   canRedo: boolean;
@@ -46,6 +52,9 @@ interface Props {
 export const TopHeader: React.FC<Props> = ({
   project,
   projects,
+  hardware,
+  probingHardware = false,
+  onRefreshHardware,
   workspaceLayout,
   canUndo,
   canRedo,
@@ -448,8 +457,48 @@ export const TopHeader: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Right: AI TTS + Primary Batch Export CTA */}
+      {/* Right: GPU Acceleration Status + AI TTS + Primary Batch Export CTA */}
       <div className="flex items-center gap-2 shrink-0">
+        {hardware && (
+          <button
+            type="button"
+            onClick={onRefreshHardware}
+            title={
+              hardware.hasHardwareGpu
+                ? `已启用硬件编码加速: ${
+                    hardware.encoders.find((e) => e.id === hardware.recommendedEncoder)?.name ||
+                    hardware.recommendedEncoder
+                  }${
+                    hardware.gpuNames.length > 0 ? `\n检测到显卡: ${hardware.gpuNames.join(' / ')}` : ''
+                  }\n点击可重新探测硬件驱动`
+                : `当前使用 CPU 多核 x264 高兼容编码${
+                    hardware.gpuNames.length > 0 ? `\n检测到显卡: ${hardware.gpuNames.join(' / ')}` : ''
+                  }\n点击重新探测 NVIDIA NVENC / Intel QSV / AMD AMF 硬件加速`
+            }
+            className={`hidden xl:flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-medium whitespace-nowrap transition ${
+              hardware.hasHardwareGpu
+                ? 'bg-emerald-500/12 hover:bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
+                : 'bg-[#171A24] hover:bg-[#222736] border-[#2C3144] text-[#9CA3AF] hover:text-white'
+            }`}
+          >
+            {probingHardware ? (
+              <RefreshCw className="w-3 h-3 animate-spin text-[#00E5FF] shrink-0" />
+            ) : hardware.hasHardwareGpu ? (
+              <Zap className="w-3 h-3 text-emerald-400 fill-current shrink-0" />
+            ) : (
+              <Cpu className="w-3 h-3 text-[#8A90A2] shrink-0" />
+            )}
+            <span>
+              {hardware.hasHardwareGpu
+                ? `GPU加速 · ${
+                    hardware.encoders.find((e) => e.id === hardware.recommendedEncoder)
+                      ?.shortLabel || hardware.recommendedEncoder
+                  }`
+                : 'CPU 软编'}
+            </span>
+          </button>
+        )}
+
         <button
           onClick={onOpenTtsStudio}
           className="px-2.5 py-1.5 rounded-lg bg-[#201D33] hover:bg-[#2B2645] border border-purple-400/40 text-purple-200 font-bold text-xs whitespace-nowrap transition flex items-center gap-1.5"

@@ -578,27 +578,70 @@ export const MatrixMixerView: React.FC<Props> = ({
             </label>
           </div>
 
-          <div className="pt-2 border-t border-[#262B3D] grid grid-cols-2 gap-2 text-[11px] text-[#E5E7EB]">
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={matrix.autoSyncSubtitles !== false}
-                onChange={(e) =>
-                  onUpdateMatrix({ ...matrix, autoSyncSubtitles: e.target.checked })
-                }
-                className="accent-[#FFB800]"
-              />
-              <span>自动挂配音动态字幕</span>
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={!!matrix.autoDedup}
-                onChange={(e) => onUpdateMatrix({ ...matrix, autoDedup: e.target.checked })}
-                className="accent-[#FFB800]"
-              />
-              <span>裂变同步差异化防重</span>
-            </label>
+          <div className="pt-2 border-t border-[#262B3D] space-y-2 text-[11px] text-[#E5E7EB]">
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={matrix.autoSyncSubtitles !== false}
+                  onChange={(e) =>
+                    onUpdateMatrix({ ...matrix, autoSyncSubtitles: e.target.checked })
+                  }
+                  className="accent-[#FFB800]"
+                />
+                <span>自动挂配音动态字幕</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!matrix.autoDedup}
+                  onChange={(e) => onUpdateMatrix({ ...matrix, autoDedup: e.target.checked })}
+                  className="accent-[#FFB800]"
+                />
+                <span>裂变同步四维防重</span>
+              </label>
+            </div>
+
+            {matrix.autoDedup && (
+              <div className="p-2 rounded-lg bg-[#12151F] border border-[#FFB800]/30 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1">
+                  {(
+                    [
+                      { id: 'light', label: '🟢轻度' },
+                      { id: 'standard', label: '🟡标准' },
+                      { id: 'strong', label: '🔴强力' },
+                    ] as const
+                  ).map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => onUpdateMatrix({ ...matrix, dedupPreset: p.id })}
+                      className={`px-1.5 py-0.5 rounded text-[10px] border transition ${
+                        (matrix.dedupPreset || 'standard') === p.id
+                          ? 'bg-[#FFB800]/20 border-[#FFB800] text-[#FFB800] font-semibold'
+                          : 'bg-[#191D2B] border-[#2A3044] text-[#8A90A2]'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <label
+                  className="flex items-center gap-1 text-[10px] text-[#CBD5E1] cursor-pointer whitespace-nowrap"
+                  title="开启后禁止水平镜像，防止商品包装袋文字翻反"
+                >
+                  <input
+                    type="checkbox"
+                    checked={matrix.protectPackagingText !== false}
+                    onChange={(e) =>
+                      onUpdateMatrix({ ...matrix, protectPackagingText: e.target.checked })
+                    }
+                    className="accent-[#00E5FF]"
+                  />
+                  <span>🔒禁镜像护字</span>
+                </label>
+              </div>
+            )}
           </div>
         </div>
 

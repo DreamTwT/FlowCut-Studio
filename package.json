@@ -1,10 +1,10 @@
 {
   "name": "flowcut-studio",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
-  "description": "FlowCut Pro v2.0.3 - Short-Video Batch Mixing & Ad Production Studio",
+  "description": "FlowCut Pro v2.1.0 - Short-Video Batch Mixing & Ad Production Studio",
   "author": "FlowCut Studio",
   "config": {
     "electron_mirror": "https://cdn.npmmirror.com/binaries/electron/",

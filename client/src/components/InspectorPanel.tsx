@@ -22,11 +22,14 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  buildDedupFromPreset,
   buildSyncedSubtitlesFromScript,
   createDefaultDedupConfig,
   createDefaultSubtitleConfig,
   createDefaultWatermarkConfig,
+  DEDUP_PRESETS,
   DedupConfig,
+  DedupPresetId,
   exportCuesToSrt,
   FIT_MODE_LABELS,
   FitMode,
@@ -65,7 +68,10 @@ interface Props {
   onSyncWatermarkAllGroups: (wm: WatermarkConfig) => void;
   onUploadWatermarkLogo: (file: File) => void;
   onUpdateDedup: (groupId: string, next: DedupConfig) => void;
-  onBatchRandomizeDedupAllGroups: (allowMirror: boolean) => void;
+  onBatchRandomizeDedupAllGroups: (
+    allowMirror: boolean,
+    preset: Exclude<DedupPresetId, 'custom'>
+  ) => void;
   onUpdateGroupAudio: (
     groupId: string,
     patch: Partial<VideoGroup>
@@ -101,7 +107,10 @@ export const InspectorPanel: React.FC<Props> = ({
   const [tab, setTab] = useState<'clip' | 'overlay' | 'audio' | 'brand_dedup'>('overlay');
   const [textSubTab, setTextSubTab] = useState<'subtitles' | 'stickers'>('subtitles');
   const [customSubScript, setCustomSubScript] = useState('');
-  const [allowBatchMirror, setAllowBatchMirror] = useState(false);
+  const [protectTextNoMirror, setProtectTextNoMirror] = useState(true);
+  const [batchDedupPreset, setBatchDedupPreset] =
+    useState<Exclude<DedupPresetId, 'custom'>>('standard');
+  const [showAdvancedDedup, setShowAdvancedDedup] = useState(false);
   const logoInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!activeGroup) {
@@ -1369,7 +1378,7 @@ export const InspectorPanel: React.FC<Props> = ({
                 </button>
               </div>
 
-              {/* 2. Anti-Duplicate / Smart Matrix Dedup Filters */}
+              {/* 2. 4D Deep Anti-Duplicate Engine v2.1 (四维过审级深度防重引擎) */}
               <div className="p-3 rounded-xl bg-[#191C27] border border-[#FFB800]/35 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <label className="flex items-center gap-1.5 text-xs font-bold text-white cursor-pointer">
@@ -1382,15 +1391,64 @@ export const InspectorPanel: React.FC<Props> = ({
                       className="accent-[#FFB800]"
                     />
                     <ShieldCheck className="w-3.5 h-3.5 text-[#FFB800]" />
-                    本组画面防重去重微调
+                    <span>四维过审防重引擎 v2.1</span>
                   </label>
+                  <span className="px-1.5 py-0.5 rounded bg-[#FFB800]/15 text-[#FFB800] text-[10px] font-semibold">
+                    不伤花字/字幕
+                  </span>
                 </div>
 
+                {/* 3-Tier Quick Strategy Presets */}
+                <div className="space-y-1">
+                  <div className="text-[10px] text-[#9CA3AF] flex items-center justify-between">
+                    <span>一键切换防重强度预设</span>
+                    <span>
+                      {dedup.preset && dedup.preset !== 'custom'
+                        ? DEDUP_PRESETS[dedup.preset].badge
+                        : '自定义微调'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {(
+                      [
+                        { id: 'light', dot: '🟢', short: '轻度自然' },
+                        { id: 'standard', dot: '🟡', short: '标准投流' },
+                        { id: 'strong', dot: '🔴', short: '强力过审' },
+                      ] as const
+                    ).map((p) => {
+                      const active = dedup.enabled && dedup.preset === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setBatchDedupPreset(p.id);
+                            onUpdateDedup(
+                              activeGroup.id,
+                              buildDedupFromPreset(p.id, 0, !protectTextNoMirror)
+                            );
+                          }}
+                          title={DEDUP_PRESETS[p.id].desc}
+                          className={`py-1.5 px-1.5 rounded-lg border text-[11px] font-semibold transition flex items-center justify-center gap-1 whitespace-nowrap ${
+                            active
+                              ? 'bg-[#FFB800]/20 border-[#FFB800] text-[#FFB800]'
+                              : 'bg-[#12141D] border-[#262B3D] text-[#B8C0D0] hover:text-white'
+                          }`}
+                        >
+                          <span>{p.dot}</span>
+                          <span>{p.short}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Core Quick Summary + Collapsible 4D Fine-Tune */}
                 <div className="space-y-2 text-[11px]">
                   <label className="flex items-center justify-between gap-2 p-2 rounded-lg bg-[#11131B] border border-[#262B3D] cursor-pointer">
                     <span className="flex items-center gap-1.5 text-[#E5E7EB]">
                       <FlipHorizontal2 className="w-3.5 h-3.5 text-[#FFB800] shrink-0" />
-                      <span>水平镜像画面 (不翻转花字/字幕/水印)</span>
+                      <span>底层画面水平镜像 (不翻转花字/字幕/LOGO)</span>
                     </span>
                     <input
                       type="checkbox"
@@ -1399,6 +1457,7 @@ export const InspectorPanel: React.FC<Props> = ({
                         onUpdateDedup(activeGroup.id, {
                           ...dedup,
                           enabled: true,
+                          preset: 'custom',
                           mirrorFlip: e.target.checked,
                         })
                       }
@@ -1406,138 +1465,329 @@ export const InspectorPanel: React.FC<Props> = ({
                     />
                   </label>
 
-                  <div>
-                    <div className="flex justify-between text-[#B8C0D0]">
-                      <span>微缩放裁边去重 (改变帧像素哈希)</span>
-                      <span className="font-mono text-[#FFB800]">
-                        +{(dedup.zoomPunchPct || 0).toFixed(1)}%
-                      </span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="flex justify-between text-[#B8C0D0]">
+                        <span>微缩放裁边</span>
+                        <span className="font-mono text-[#FFB800]">
+                          +{(dedup.zoomPunchPct || 0).toFixed(1)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={8}
+                        step={0.5}
+                        value={dedup.zoomPunchPct || 0}
+                        onChange={(e) =>
+                          onUpdateDedup(activeGroup.id, {
+                            ...dedup,
+                            enabled: true,
+                            preset: 'custom',
+                            zoomPunchPct: parseFloat(e.target.value),
+                          })
+                        }
+                        className="w-full accent-[#FFB800]"
+                      />
                     </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={8}
-                      step={0.5}
-                      value={dedup.zoomPunchPct || 0}
-                      onChange={(e) =>
-                        onUpdateDedup(activeGroup.id, {
-                          ...dedup,
-                          enabled: true,
-                          zoomPunchPct: parseFloat(e.target.value),
-                        })
-                      }
-                      className="w-full accent-[#FFB800]"
-                    />
-                  </div>
 
-                  <div className="grid grid-cols-3 gap-1.5">
                     <div>
-                      <div className="flex justify-between text-[10px] text-[#9CA3AF]">
-                        <span>亮度</span>
-                        <span className="font-mono text-white">
-                          {dedup.brightness >= 0 ? '+' : ''}
-                          {Math.round((dedup.brightness || 0) * 100)}%
+                      <div className="flex justify-between text-[#B8C0D0]" title="在花字与动态字幕烧录完成后同倍率作用于音视频，保证口播与字幕100%对齐！">
+                        <span>音字同步微变速</span>
+                        <span className="font-mono text-[#00E5FF]">
+                          {(dedup.speedJitterPct || 0) >= 0 ? '+' : ''}
+                          {(dedup.speedJitterPct || 0).toFixed(1)}%
                         </span>
                       </div>
                       <input
                         type="range"
-                        min={-0.08}
-                        max={0.08}
-                        step={0.01}
-                        value={dedup.brightness || 0}
+                        min={-3.0}
+                        max={3.5}
+                        step={0.5}
+                        value={dedup.speedJitterPct || 0}
                         onChange={(e) =>
                           onUpdateDedup(activeGroup.id, {
                             ...dedup,
                             enabled: true,
-                            brightness: parseFloat(e.target.value),
+                            preset: 'custom',
+                            speedJitterPct: parseFloat(e.target.value),
                           })
                         }
-                        className="w-full accent-[#FFB800]"
-                      />
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-[10px] text-[#9CA3AF]">
-                        <span>对比度</span>
-                        <span className="font-mono text-white">
-                          {Math.round((dedup.contrast ?? 1) * 100)}%
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0.92}
-                        max={1.12}
-                        step={0.01}
-                        value={dedup.contrast ?? 1}
-                        onChange={(e) =>
-                          onUpdateDedup(activeGroup.id, {
-                            ...dedup,
-                            enabled: true,
-                            contrast: parseFloat(e.target.value),
-                          })
-                        }
-                        className="w-full accent-[#FFB800]"
-                      />
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-[10px] text-[#9CA3AF]">
-                        <span>饱和度</span>
-                        <span className="font-mono text-white">
-                          {Math.round((dedup.saturation ?? 1) * 100)}%
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0.9}
-                        max={1.15}
-                        step={0.01}
-                        value={dedup.saturation ?? 1}
-                        onChange={(e) =>
-                          onUpdateDedup(activeGroup.id, {
-                            ...dedup,
-                            enabled: true,
-                            saturation: parseFloat(e.target.value),
-                          })
-                        }
-                        className="w-full accent-[#FFB800]"
+                        className="w-full accent-[#00E5FF]"
                       />
                     </div>
                   </div>
 
-                  <label className="flex items-center gap-2 text-[#CBD5E1] cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={dedup.sharpen}
-                      onChange={(e) =>
-                        onUpdateDedup(activeGroup.id, {
-                          ...dedup,
-                          enabled: true,
-                          sharpen: e.target.checked,
-                        })
-                      }
-                      className="accent-[#FFB800]"
-                    />
-                    开启微锐化重构视频编码宏块指纹
-                  </label>
+                  {/* 4D Checkboxes: Audio Chromaprint + Metadata Scrub + Random GOP */}
+                  <div className="p-2 rounded-lg bg-[#11131B] border border-[#24293B] space-y-1.5 text-[11px]">
+                    <label className="flex items-center justify-between cursor-pointer text-[#E5E7EB]">
+                      <span>🎵 音频声纹无感微均衡去重 (防同款BGM撞库)</span>
+                      <input
+                        type="checkbox"
+                        checked={dedup.audioFingerprint !== false}
+                        onChange={(e) =>
+                          onUpdateDedup(activeGroup.id, {
+                            ...dedup,
+                            enabled: true,
+                            audioFingerprint: e.target.checked,
+                          })
+                        }
+                        className="accent-[#FFB800]"
+                      />
+                    </label>
+                    <label className="flex items-center justify-between cursor-pointer text-[#E5E7EB]">
+                      <span>🧹 MP4 容器清洗 + 随机自然拍摄时间戳伪装</span>
+                      <input
+                        type="checkbox"
+                        checked={dedup.scrubMetadata !== false}
+                        onChange={(e) =>
+                          onUpdateDedup(activeGroup.id, {
+                            ...dedup,
+                            enabled: true,
+                            scrubMetadata: e.target.checked,
+                          })
+                        }
+                        className="accent-[#FFB800]"
+                      />
+                    </label>
+                    <label className="flex items-center justify-between cursor-pointer text-[#E5E7EB]">
+                      <span>⏱️ 随机 GOP 关键帧间距 (错开平台抽检I帧)</span>
+                      <input
+                        type="checkbox"
+                        checked={dedup.randomGop !== false}
+                        onChange={(e) =>
+                          onUpdateDedup(activeGroup.id, {
+                            ...dedup,
+                            enabled: true,
+                            randomGop: e.target.checked,
+                          })
+                        }
+                        className="accent-[#FFB800]"
+                      />
+                    </label>
+                  </div>
+
+                  {/* Expandable Advanced Spatial Controls */}
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedDedup((s) => !s)}
+                    className="w-full py-1 rounded bg-[#141722] hover:bg-[#1E2334] border border-[#262C40] text-[10px] text-[#9CA3AF] hover:text-white flex items-center justify-center gap-1 transition"
+                  >
+                    <Sliders className="w-3 h-3 text-[#FFB800]" />
+                    {showAdvancedDedup
+                      ? '收起高阶像素/颗粒/旋转精调'
+                      : '展开高阶像素/胶片微颗粒/微旋转精调'}
+                  </button>
+
+                  {showAdvancedDedup && (
+                    <div className="p-2 rounded-lg bg-[#11131B] border border-[#262B3D] space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#9CA3AF]">
+                            <span>时变胶片微颗粒</span>
+                            <span className="font-mono text-[#FFB800]">
+                              Lv.{dedup.temporalGrain || 0}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={6}
+                            step={1}
+                            value={dedup.temporalGrain || 0}
+                            onChange={(e) =>
+                              onUpdateDedup(activeGroup.id, {
+                                ...dedup,
+                                enabled: true,
+                                preset: 'custom',
+                                temporalGrain: parseInt(e.target.value, 10),
+                              })
+                            }
+                            className="w-full accent-[#FFB800]"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#9CA3AF]">
+                            <span>隐形微旋转(自动扩边)</span>
+                            <span className="font-mono text-[#FFB800]">
+                              {(dedup.rotateDeg || 0) >= 0 ? '+' : ''}
+                              {(dedup.rotateDeg || 0).toFixed(1)}°
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={-1.2}
+                            max={1.2}
+                            step={0.2}
+                            value={dedup.rotateDeg || 0}
+                            onChange={(e) =>
+                              onUpdateDedup(activeGroup.id, {
+                                ...dedup,
+                                enabled: true,
+                                preset: 'custom',
+                                rotateDeg: parseFloat(e.target.value),
+                              })
+                            }
+                            className="w-full accent-[#FFB800]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-4 gap-1.5">
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#9CA3AF]">
+                            <span>亮度</span>
+                            <span className="font-mono text-white">
+                              {Math.round((dedup.brightness || 0) * 100)}%
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={-0.08}
+                            max={0.08}
+                            step={0.01}
+                            value={dedup.brightness || 0}
+                            onChange={(e) =>
+                              onUpdateDedup(activeGroup.id, {
+                                ...dedup,
+                                enabled: true,
+                                preset: 'custom',
+                                brightness: parseFloat(e.target.value),
+                              })
+                            }
+                            className="w-full accent-[#FFB800]"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#9CA3AF]">
+                            <span>对比</span>
+                            <span className="font-mono text-white">
+                              {Math.round((dedup.contrast ?? 1) * 100)}%
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.92}
+                            max={1.12}
+                            step={0.01}
+                            value={dedup.contrast ?? 1}
+                            onChange={(e) =>
+                              onUpdateDedup(activeGroup.id, {
+                                ...dedup,
+                                enabled: true,
+                                preset: 'custom',
+                                contrast: parseFloat(e.target.value),
+                              })
+                            }
+                            className="w-full accent-[#FFB800]"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#9CA3AF]">
+                            <span>饱和</span>
+                            <span className="font-mono text-white">
+                              {Math.round((dedup.saturation ?? 1) * 100)}%
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.9}
+                            max={1.15}
+                            step={0.01}
+                            value={dedup.saturation ?? 1}
+                            onChange={(e) =>
+                              onUpdateDedup(activeGroup.id, {
+                                ...dedup,
+                                enabled: true,
+                                preset: 'custom',
+                                saturation: parseFloat(e.target.value),
+                              })
+                            }
+                            className="w-full accent-[#FFB800]"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex justify-between text-[10px] text-[#9CA3AF]">
+                            <span>色相</span>
+                            <span className="font-mono text-white">
+                              {(dedup.hueDeg || 0).toFixed(0)}°
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={-5}
+                            max={5}
+                            step={0.5}
+                            value={dedup.hueDeg || 0}
+                            onChange={(e) =>
+                              onUpdateDedup(activeGroup.id, {
+                                ...dedup,
+                                enabled: true,
+                                preset: 'custom',
+                                hueDeg: parseFloat(e.target.value),
+                              })
+                            }
+                            className="w-full accent-[#FFB800]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-0.5">
+                        <label className="flex items-center gap-1.5 text-[10px] text-[#CBD5E1] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={dedup.sharpen}
+                            onChange={(e) =>
+                              onUpdateDedup(activeGroup.id, {
+                                ...dedup,
+                                enabled: true,
+                                sharpen: e.target.checked,
+                              })
+                            }
+                            className="accent-[#FFB800]"
+                          />
+                          微锐化宏块重构
+                        </label>
+                        <label className="flex items-center gap-1.5 text-[10px] text-[#CBD5E1] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(dedup.vignette)}
+                            onChange={(e) =>
+                              onUpdateDedup(activeGroup.id, {
+                                ...dedup,
+                                enabled: true,
+                                vignette: e.target.checked,
+                              })
+                            }
+                            className="accent-[#FFB800]"
+                          />
+                          自然光学暗角
+                        </label>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* One-Click Batch Differentiated Anti-Duplicate Generator! */}
                 <div className="pt-2 border-t border-[#2A3045] space-y-2">
-                  <label className="flex items-center gap-1.5 text-[11px] text-[#B8C0D0] cursor-pointer">
+                  <label className="flex items-center gap-1.5 text-[11px] text-[#E5E7EB] cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={allowBatchMirror}
-                      onChange={(e) => setAllowBatchMirror(e.target.checked)}
-                      className="accent-[#FFB800]"
+                      checked={protectTextNoMirror}
+                      onChange={(e) => setProtectTextNoMirror(e.target.checked)}
+                      className="accent-[#00E5FF]"
                     />
-                    批量防重时允许隔组穿插水平镜像 (画面无文字时推荐)
+                    <span>🔒 商品包装文字保护（禁止水平镜像，防止包装字翻反）</span>
                   </label>
 
                   <button
-                    onClick={() => onBatchRandomizeDedupAllGroups(allowBatchMirror)}
+                    onClick={() =>
+                      onBatchRandomizeDedupAllGroups(!protectTextNoMirror, batchDedupPreset)
+                    }
                     className="w-full py-2 rounded-lg bg-gradient-to-r from-[#FFB800] to-[#FF9500] text-[#111318] font-bold text-xs flex items-center justify-center gap-1.5 hover:brightness-110 transition whitespace-nowrap"
                   >
                     <Zap className="w-3.5 h-3.5 fill-current shrink-0" />
-                    一键为全部视频组分配差异化防重参数
+                    一键按「{DEDUP_PRESETS[batchDedupPreset].label}」分配全组差异化指纹
                   </button>
                 </div>
               </div>

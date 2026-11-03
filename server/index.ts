@@ -14,6 +14,7 @@ import {
   UPLOADS_DIR,
 } from './paths.js';
 import { ensureFfmpegReady } from './ffmpegBootstrap.js';
+import { probeHardwareAcceleration } from './gpuDetector.js';
 import { decodeUploadFilename, probeAndProcessFile } from './mediaService.js';
 import {
   BreathRemovalResult,
@@ -84,13 +85,23 @@ app.get('/api/health', (_req, res) => {
   const bins = refreshMediaBinaries();
   res.json({
     ok: true,
-    version: '2.0.0',
+    version: '2.1.0',
     isDesktop: process.env.FLOWCUT_DESKTOP === '1',
     ffmpeg: bins.ffmpegPath || FFMPEG_BIN,
     ffmpegFound: bins.ffmpegFound,
     storageDir: STORAGE_DIR,
     exportsDir: EXPORTS_DIR,
   });
+});
+
+app.get('/api/hardware', async (req, res) => {
+  try {
+    const force = req.query.refresh === '1';
+    const report = await probeHardwareAcceleration(force);
+    res.json({ hardware: report });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || '硬件加速探测失败' });
+  }
 });
 
 app.post('/api/system/open-exports', async (req, res) => {
@@ -539,6 +550,8 @@ async function startServer() {
 
   // Ensure local/system FFmpeg is ready (auto-downloads from Alibaba Domestic CDN on first launch if needed)
   await ensureFfmpegReady();
+  // Warm up hardware GPU encoder cache in background
+  void probeHardwareAcceleration(true);
 
   // Pre-seed demo project before listening so initial page load is instantaneous
   if (!getActiveProject()) {

@@ -6,6 +6,10 @@ import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { EXPORTS_DIR, FFMPEG_BIN, refreshMediaBinaries, UPLOADS_DIR } from './paths.js';
 import {
+  buildVideoEncoderArgs,
+  resolveEncoderForRender,
+} from './gpuDetector.js';
+import {
   PreRenderedSubtitleStripInput,
   renderOverlayPng,
   renderSubtitleStripFiles,
@@ -20,6 +24,8 @@ import {
   ProjectData,
   RenderBatchJob,
   RenderItemStatus,
+  ResolvedVideoEncoderId,
+  VideoEncoderId,
   VideoGroup,
 } from '../shared/schema.js';
 
@@ -31,6 +37,15 @@ function sanitizeFilename(raw: string): string {
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
     .replace(/\s+/g, '_')
     .slice(0, 90);
+}
+
+function stableHashInt(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h >>> 0);
 }
 
 export function getBatchJob(batchId: string): RenderBatchJob | undefined {
@@ -64,6 +79,8 @@ export interface StartBatchOptions {
   quality?: ExportQuality;
   fps?: 30 | 60;
   crf?: 20 | 23;
+  videoEncoder?: VideoEncoderId;
+  concurrency?: 1 | 2 | 3 | 4;
   filenamePattern?: string;
   overlayPngMap?: Record<string, string>;
   subtitleStripsMap?: Record<string, PreRenderedSubtitleStripInput[]>;
@@ -74,6 +91,11 @@ export function startBatchRender(project: ProjectData, opts: StartBatchOptions =
   const quality = opts.quality || project.exportQuality || '1080p';
   const fps = opts.fps || project.exportFps || 30;
   const crf = opts.crf || project.exportCrf || 23;
+  const encoderRequested: VideoEncoderId = opts.videoEncoder || project.videoEncoder || 'auto';
+  const concurrency = Math.min(
+    4,
+    Math.max(1, Number(opts.concurrency || project.renderConcurrency || 2))
+  ) as 1 | 2 | 3 | 4;
   const pattern = opts.filenamePattern || project.filenamePattern || '{project}_{index}_{group}';
 
   const targetGroups = project.videoGroups.filter((g) => {
@@ -113,6 +135,8 @@ export function startBatchRender(project: ProjectData, opts: StartBatchOptions =
     aspectRatio,
     quality,
     fps,
+    encoderRequested,
+    concurrency,
     createdAt: new Date().toISOString(),
     status: items.length === 0 ? 'completed' : 'running',
     items,
@@ -120,7 +144,6 @@ export function startBatchRender(project: ProjectData, opts: StartBatchOptions =
 
   batches.set(batchId, batch);
 
-  // Kick off async worker pool (concurrency = 2)
   if (items.length > 0) {
     void processBatchQueue(
       batch,
@@ -128,6 +151,8 @@ export function startBatchRender(project: ProjectData, opts: StartBatchOptions =
       targetGroups,
       batchDir,
       crf,
+      encoderRequested,
+      concurrency,
       opts.overlayPngMap || {},
       opts.subtitleStripsMap || {}
     );
@@ -142,12 +167,15 @@ async function processBatchQueue(
   groups: VideoGroup[],
   batchDir: string,
   crf: number,
+  encoderRequested: VideoEncoderId,
+  concurrency: number,
   overlayPngMap: Record<string, string>,
   subtitleStripsMap: Record<string, PreRenderedSubtitleStripInput[]>
 ) {
-  const concurrency = 2;
-  let cursor = 0;
+  const resolved = await resolveEncoderForRender(encoderRequested);
+  batch.encoderResolved = resolved.shortLabel;
 
+  let cursor = 0;
   const assetMap = new Map<string, MediaAsset>(project.assets.map((a) => [a.id, a]));
   const groupMap = new Map<string, VideoGroup>(groups.map((g) => [g.id, g]));
 
@@ -173,6 +201,8 @@ async function processBatchQueue(
           assetMap,
           batchDir,
           crf,
+          resolved.encoderId,
+          resolved.shortLabel,
           project,
           overlayPngMap[group.id],
           subtitleStripsMap[group.id]
@@ -203,10 +233,13 @@ async function renderSingleGroup(
   assetMap: Map<string, MediaAsset>,
   batchDir: string,
   crf: number,
+  primaryEncoderId: ResolvedVideoEncoderId,
+  primaryEncoderLabel: string,
   project: ProjectData,
   preRenderedOverlayPng?: string,
   preRenderedSubtitleStrips?: PreRenderedSubtitleStripInput[]
 ): Promise<void> {
+  const startWallMs = Date.now();
   item.status = 'rendering';
   item.progress = 2;
   item.startedAt = new Date().toISOString();
@@ -249,7 +282,6 @@ async function renderSingleGroup(
       inputArgs.push('-ss', t0.toFixed(3), '-t', rawDur.toFixed(3), '-i', filePath);
     }
 
-    // Build video filter for clip i
     const ptsExpr =
       asset.type === 'video' && Math.abs(speed - 1.0) > 0.01
         ? `setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`
@@ -347,32 +379,71 @@ async function renderSingleGroup(
 
   let nextInputIdx = N;
   const tempCleanupFiles: string[] = [];
+  const seedHash = stableHashInt(`${group.id}_${item.jobItemId}`);
 
-  // A) Anti-Duplicate (批量防重去重) Video Layer Filters — applied BEFORE titles/subtitles/watermarks
-  // so hflip/zoom/color jitter NEVER mirror or distort text & brand logos!
+  // =========================================================================
+  // DIMENSION 1: Spatial Visual Hash Dispersion (Underlying Video ONLY!)
+  // Applied BEFORE Fancy Titles, Timed Subtitles & Brand Watermark so text/logos
+  // are NEVER flipped, rotated, or noisy!
+  // =========================================================================
   let currVideoPad = '[vseq]';
   if (group.dedup?.enabled) {
+    const d = group.dedup;
     const dedupChain: string[] = [];
-    if (group.dedup.mirrorFlip) {
+    if (d.mirrorFlip) {
       dedupChain.push('hflip');
     }
-    const zp = Number(group.dedup.zoomPunchPct || 0);
+
+    const rotDeg = Math.max(-1.5, Math.min(1.5, Number(d.rotateDeg || 0)));
+    const hasRot = Math.abs(rotDeg) >= 0.08;
+    const rotRad = (rotDeg * Math.PI) / 180;
+    const aspectMaxRatio = Math.max(W, H) / Math.max(1, Math.min(W, H));
+    const minZoomForRotPct = hasRot
+      ? (Math.cos(Math.abs(rotRad)) + aspectMaxRatio * Math.sin(Math.abs(rotRad)) - 1) * 100 + 0.45
+      : 0;
+
+    const zp = Math.max(Number(d.zoomPunchPct || 0), minZoomForRotPct);
     if (zp > 0.1) {
       const zW = Math.max(W + 2, Math.round((W * (1 + zp / 100)) / 2) * 2);
       const zH = Math.max(H + 2, Math.round((H * (1 + zp / 100)) / 2) * 2);
-      dedupChain.push(`scale=${zW}:${zH},crop=${W}:${H}`);
+      if (hasRot) {
+        dedupChain.push(
+          `scale=${zW}:${zH}`,
+          `rotate=${rotRad.toFixed(5)}:ow=${zW}:oh=${zH}:bilinear=1`,
+          `crop=${W}:${H}`
+        );
+      } else {
+        dedupChain.push(`scale=${zW}:${zH},crop=${W}:${H}`);
+      }
     }
-    const br = Number(group.dedup.brightness || 0);
-    const ct = Number(group.dedup.contrast ?? 1);
-    const sat = Number(group.dedup.saturation ?? 1);
+
+    const br = Number(d.brightness || 0);
+    const ct = Number(d.contrast ?? 1);
+    const sat = Number(d.saturation ?? 1);
     if (Math.abs(br) > 0.004 || Math.abs(ct - 1) > 0.004 || Math.abs(sat - 1) > 0.004) {
       dedupChain.push(
         `eq=brightness=${br.toFixed(3)}:contrast=${ct.toFixed(3)}:saturation=${sat.toFixed(3)}`
       );
     }
-    if (group.dedup.sharpen) {
+
+    const hueDeg = Number(d.hueDeg || 0);
+    if (Math.abs(hueDeg) >= 0.2) {
+      dedupChain.push(`hue=h=${hueDeg.toFixed(2)}`);
+    }
+
+    if (d.sharpen) {
       dedupChain.push('unsharp=5:5:0.55:5:5:0.0');
     }
+
+    const grain = Math.min(6, Math.max(0, Math.round(Number(d.temporalGrain || 0))));
+    if (grain >= 1) {
+      dedupChain.push(`noise=alls=${grain}:allf=t`);
+    }
+
+    if (d.vignette) {
+      dedupChain.push('vignette=PI/10');
+    }
+
     if (dedupChain.length > 0) {
       filterParts.push(`${currVideoPad}${dedupChain.join(',')}[vdedup]`);
       currVideoPad = '[vdedup]';
@@ -468,8 +539,6 @@ async function renderSingleGroup(
     nextInputIdx++;
   }
 
-  filterParts.push(`${currVideoPad}format=yuv420p[vfinal]`);
-
   // 1) Voiceover / AI TTS Track
   let voAsset: MediaAsset | null = null;
   let voPath: string | null = null;
@@ -548,39 +617,135 @@ async function renderSingleGroup(
     hasBgmStream = true;
   }
 
-  // 3) Final Multi-Track Mix + Sidechain Voiceover Ducking
+  // 3) Final Multi-Track Mix + Sidechain Voiceover Ducking -> [apre_mix]
+  let currAudioPad = '[apre_mix]';
   if (hasVoStream && hasBgmStream) {
     if (group.bgmDucking !== false) {
       filterParts.push(
         `[avo]asplit=2[avo_mix][avo_sc]`,
         `[abgm_raw][avo_sc]sidechaincompress=threshold=0.025:ratio=5:attack=30:release=350[abgm]`,
-        `[aseq][avo_mix][abgm]amix=inputs=3:duration=first:dropout_transition=0:normalize=0[afinal]`
+        `[aseq][avo_mix][abgm]amix=inputs=3:duration=first:dropout_transition=0:normalize=0${currAudioPad}`
       );
     } else {
       filterParts.push(
-        `[aseq][avo][abgm_raw]amix=inputs=3:duration=first:dropout_transition=0:normalize=0[afinal]`
+        `[aseq][avo][abgm_raw]amix=inputs=3:duration=first:dropout_transition=0:normalize=0${currAudioPad}`
       );
     }
   } else if (hasVoStream) {
     filterParts.push(
-      `[aseq][avo]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[afinal]`
+      `[aseq][avo]amix=inputs=2:duration=first:dropout_transition=0:normalize=0${currAudioPad}`
     );
   } else if (hasBgmStream) {
     filterParts.push(
-      `[aseq][abgm_raw]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[afinal]`
+      `[aseq][abgm_raw]amix=inputs=2:duration=first:dropout_transition=0:normalize=0${currAudioPad}`
     );
   } else {
     const fadeOut =
       group.audioFadeOut && totalDur > 1.5
         ? `afade=t=out:st=${Math.max(0, totalDur - 1.0).toFixed(3)}:d=1.0`
         : 'anull';
-    filterParts.push(`[aseq]${fadeOut}[afinal]`);
+    filterParts.push(`[aseq]${fadeOut}${currAudioPad}`);
+  }
+
+  // =========================================================================
+  // DIMENSION 2 & 3: Audio Chromaprint Dispersion + Lockstep Master Tempo Jitter
+  // Applied AFTER subtitle burn-in so voiceover & dynamic subtitles stay 100% synced!
+  // =========================================================================
+  const masterSpeedPct = group.dedup?.enabled
+    ? Math.max(-4.5, Math.min(4.5, Number(group.dedup.speedJitterPct || 0)))
+    : 0;
+  const masterSpeedFactor =
+    Math.abs(masterSpeedPct) >= 0.15 ? 1 + masterSpeedPct / 100 : 1.0;
+  const finalOutDur = Math.max(0.2, totalDur / masterSpeedFactor);
+
+  // Video Finalization Pad
+  if (Math.abs(masterSpeedFactor - 1.0) >= 0.0015) {
+    filterParts.push(
+      `${currVideoPad}setpts=PTS/${masterSpeedFactor.toFixed(5)},fps=${fps},format=yuv420p[vfinal]`
+    );
+  } else {
+    filterParts.push(`${currVideoPad}format=yuv420p[vfinal]`);
+  }
+
+  // Audio Finalization Pad (Chromaprint EQ + Lockstep Tempo)
+  const audioPostChain: string[] = [];
+  if (group.dedup?.enabled && group.dedup.audioFingerprint) {
+    const f1 = 820 + (seedHash % 580); // 820 ~ 1400 Hz
+    const g1 = ((seedHash % 2 === 0 ? 1 : -1) * (0.85 + ((seedHash >> 3) % 5) * 0.1)).toFixed(2);
+    const f2 = 2850 + ((seedHash >> 5) % 1650); // 2850 ~ 4500 Hz
+    const g2 = ((seedHash % 2 === 1 ? 1 : -1) * (0.9 + ((seedHash >> 7) % 5) * 0.1)).toFixed(2);
+    const stereoM = (1.03 + ((seedHash >> 9) % 6) * 0.01).toFixed(2);
+    audioPostChain.push(
+      'highpass=f=38',
+      `equalizer=f=${f1}:t=q:w=1.4:g=${g1}`,
+      `equalizer=f=${f2}:t=q:w=1.6:g=${g2}`,
+      `extrastereo=m=${stereoM}:c=0`
+    );
+  }
+  if (Math.abs(masterSpeedFactor - 1.0) >= 0.0015) {
+    audioPostChain.push(`atempo=${masterSpeedFactor.toFixed(5)}`);
+  }
+
+  if (audioPostChain.length > 0) {
+    filterParts.push(`${currAudioPad}${audioPostChain.join(',')}[afinal]`);
+  } else {
+    filterParts.push(`${currAudioPad}anull[afinal]`);
+  }
+
+  // =========================================================================
+  // DIMENSION 4: Random GOP Keyframe Interval & Container Metadata Scrubbing
+  // =========================================================================
+  const gopSize =
+    group.dedup?.enabled && group.dedup.randomGop !== false
+      ? 46 + (seedHash % 29) // 46 ~ 74 frames
+      : undefined;
+
+  const containerMetaArgs: string[] = [];
+  if (group.dedup?.enabled && group.dedup.scrubMetadata !== false) {
+    // Natural random recent capture timestamp (1h ~ 46h ago)
+    const offsetMs = (3600 + (seedHash % 162000)) * 1000;
+    const fakeCaptureIso = new Date(Date.now() - offsetMs)
+      .toISOString()
+      .replace(/\.\d{3}Z$/, 'Z');
+    containerMetaArgs.push(
+      '-map_metadata',
+      '-1',
+      '-map_chapters',
+      '-1',
+      '-fflags',
+      '+bitexact',
+      '-metadata',
+      `creation_time=${fakeCaptureIso}`,
+      '-metadata:s:v:0',
+      'handler_name=Core Media Video',
+      '-metadata:s:a:0',
+      'handler_name=Core Media Audio',
+      '-metadata:s:v:0',
+      'encoder=',
+      '-metadata:s:a:0',
+      'encoder=',
+      '-color_primaries',
+      'bt709',
+      '-color_trc',
+      'bt709',
+      '-colorspace',
+      'bt709'
+    );
   }
 
   const outFilePath = path.join(batchDir, item.outputFilename);
   const filterComplex = filterParts.join(';');
 
-  const ffmpegArgs = [
+  const currentBins = refreshMediaBinaries();
+  if (!currentBins.ffmpegFound) {
+    throw new Error(
+      '未检测到 FFmpeg 渲染引擎。请确认网络畅通后重启启动脚本自动下载，或将 ffmpeg.exe 放入软件目录的 bin 文件夹中。'
+    );
+  }
+
+  const ffmpegExecutable = currentBins.ffmpegPath || FFMPEG_BIN;
+
+  const buildFullArgs = (encId: ResolvedVideoEncoderId): string[] => [
     '-y',
     ...inputArgs,
     '-filter_complex',
@@ -589,12 +754,8 @@ async function renderSingleGroup(
     '[vfinal]',
     '-map',
     '[afinal]',
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-crf',
-    String(crf),
+    ...containerMetaArgs,
+    ...buildVideoEncoderArgs(encId, crf, gopSize),
     '-pix_fmt',
     'yuv420p',
     '-movflags',
@@ -604,93 +765,118 @@ async function renderSingleGroup(
     '-b:a',
     '192k',
     '-t',
-    totalDur.toFixed(3),
+    finalOutDur.toFixed(3),
     '-progress',
     'pipe:1',
     '-nostats',
     outFilePath,
   ];
 
-  const currentBins = refreshMediaBinaries();
-  if (!currentBins.ffmpegFound) {
-    throw new Error(
-      '未检测到 FFmpeg 渲染引擎。请确认网络畅通后重启启动脚本自动下载，或将 ffmpeg.exe 放入软件目录的 bin 文件夹中。'
-    );
-  }
+  const cleanupTemps = () => {
+    for (const fp of tempCleanupFiles) {
+      try {
+        if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      } catch {
+        // ignore
+      }
+    }
+  };
 
-  await new Promise<void>((resolve, reject) => {
-    const proc = spawn(currentBins.ffmpegPath || FFMPEG_BIN, ffmpegArgs, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    activeProcs.set(item.jobItemId, proc);
+  const executeFfmpegOnce = (encId: ResolvedVideoEncoderId): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegExecutable, buildFullArgs(encId), {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      activeProcs.set(item.jobItemId, proc);
 
-    let stderrTail = '';
+      let stderrTail = '';
 
-    proc.stdout.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf8');
-      const lines = text.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('out_time_us=') || line.startsWith('out_time_ms=')) {
-          const val = parseInt(line.split('=')[1], 10);
-          if (Number.isFinite(val) && val > 0 && totalDur > 0) {
-            const pct = Math.min(98, Math.max(3, Math.round((val / (totalDur * 1_000_000)) * 100)));
-            item.progress = pct;
+      proc.stdout.on('data', (chunk: Buffer) => {
+        const text = chunk.toString('utf8');
+        const lines = text.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('out_time_us=') || line.startsWith('out_time_ms=')) {
+            const val = parseInt(line.split('=')[1], 10);
+            if (Number.isFinite(val) && val > 0 && finalOutDur > 0) {
+              const pct = Math.min(
+                98,
+                Math.max(3, Math.round((val / (finalOutDur * 1_000_000)) * 100))
+              );
+              item.progress = pct;
+            }
           }
         }
-      }
-    });
+      });
 
-    proc.stderr.on('data', (chunk: Buffer) => {
-      stderrTail = (stderrTail + chunk.toString('utf8')).slice(-1800);
-    });
+      proc.stderr.on('data', (chunk: Buffer) => {
+        stderrTail = (stderrTail + chunk.toString('utf8')).slice(-1800);
+      });
 
-    const cleanupTemps = () => {
-      for (const fp of tempCleanupFiles) {
-        try {
-          if (fs.existsSync(fp)) fs.unlinkSync(fp);
-        } catch {
-          // ignore
+      proc.on('error', (err) => {
+        activeProcs.delete(item.jobItemId);
+        reject(err);
+      });
+
+      proc.on('close', (code) => {
+        activeProcs.delete(item.jobItemId);
+        if ((item.status as string) === 'cancelled') {
+          resolve();
+          return;
         }
-      }
-    };
-
-    proc.on('error', (err) => {
-      activeProcs.delete(item.jobItemId);
-      cleanupTemps();
-      reject(err);
-    });
-
-    proc.on('close', (code) => {
-      activeProcs.delete(item.jobItemId);
-      cleanupTemps();
-
-      if (item.status === 'cancelled') {
-        resolve();
-        return;
-      }
-
-      if (code === 0 && fs.existsSync(outFilePath)) {
-        const stat = fs.statSync(outFilePath);
-        item.status = 'done';
-        item.progress = 100;
-        item.outputUrl = `/storage/exports/${batch.batchId}/${encodeURIComponent(item.outputFilename)}`;
-        item.fileSizeBytes = stat.size;
-        item.durationSec = Math.round(totalDur * 10) / 10;
-        item.completedAt = new Date().toISOString();
-
-        // Update group's latest export info in project
-        const projGroup = project.videoGroups.find((g) => g.id === group.id);
-        if (projGroup) {
-          projGroup.lastExportUrl = item.outputUrl;
-          projGroup.lastExportFilename = item.outputFilename;
-          projGroup.lastExportSizeBytes = stat.size;
+        if (code === 0 && fs.existsSync(outFilePath)) {
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg (${encId}) 退出码 ${code}: ${stderrTail}`));
         }
-        resolve();
-      } else {
-        reject(new Error(`FFmpeg 退出码 ${code}: ${stderrTail}`));
-      }
+      });
     });
-  });
+
+  let usedLabel = primaryEncoderLabel;
+  try {
+    await executeFfmpegOnce(primaryEncoderId);
+  } catch (primaryErr: any) {
+    // Seamless hardware hot-fallback: if GPU session cap / driver hiccup happens, retry immediately with libx264!
+    if ((item.status as string) !== 'cancelled' && primaryEncoderId !== 'libx264') {
+      console.warn(
+        `[RenderEngine] GPU encoder ${primaryEncoderId} failed on ${item.outputFilename}, falling back to libx264:`,
+        primaryErr?.message
+      );
+      item.progress = 4;
+      usedLabel = 'CPU x264 (自动回退)';
+      try {
+        await executeFfmpegOnce('libx264');
+      } catch (fallbackErr) {
+        cleanupTemps();
+        throw fallbackErr;
+      }
+    } else {
+      cleanupTemps();
+      throw primaryErr;
+    }
+  }
+
+  cleanupTemps();
+
+  if ((item.status as string) === 'cancelled') {
+    return;
+  }
+
+  const stat = fs.statSync(outFilePath);
+  item.status = 'done';
+  item.progress = 100;
+  item.outputUrl = `/storage/exports/${batch.batchId}/${encodeURIComponent(item.outputFilename)}`;
+  item.fileSizeBytes = stat.size;
+  item.durationSec = Math.round(finalOutDur * 10) / 10;
+  item.encoderUsed = usedLabel;
+  item.elapsedMs = Date.now() - startWallMs;
+  item.completedAt = new Date().toISOString();
+
+  const projGroup = project.videoGroups.find((g) => g.id === group.id);
+  if (projGroup) {
+    projGroup.lastExportUrl = item.outputUrl;
+    projGroup.lastExportFilename = item.outputFilename;
+    projGroup.lastExportSizeBytes = stat.size;
+  }
 }
 
 export function streamBatchZip(batchId: string, res: Response) {
@@ -710,7 +896,7 @@ export function streamBatchZip(batchId: string, res: Response) {
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${zipFilename}`);
 
-  const archive = archiver('zip', { store: true }); // MP4 is already compressed; store=true zips instantaneously!
+  const archive = archiver('zip', { store: true });
   archive.on('error', (err) => {
     console.error('Zip archive error:', err);
     if (!res.headersSent) res.status(500).end();

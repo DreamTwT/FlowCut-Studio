@@ -509,19 +509,34 @@ export const PlayerMonitor: React.FC<Props> = ({
               }}
             >
               <div
-                className="w-full h-full overflow-hidden"
+                className="w-full h-full overflow-hidden relative"
                 style={
                   activeGroup?.dedup?.enabled
-                    ? {
-                        transform: `${
-                          activeGroup.dedup.mirrorFlip ? 'scaleX(-1) ' : ''
-                        }scale(${(1 + (activeGroup.dedup.zoomPunchPct || 0) / 100).toFixed(3)})`,
-                        filter: `brightness(${(1 + (activeGroup.dedup.brightness || 0)).toFixed(
-                          3
-                        )}) contrast(${(activeGroup.dedup.contrast ?? 1).toFixed(
-                          3
-                        )}) saturate(${(activeGroup.dedup.saturation ?? 1).toFixed(3)})`,
-                      }
+                    ? (() => {
+                        const d = activeGroup.dedup;
+                        const rotDeg = Number(d.rotateDeg || 0);
+                        const rotRad = (Math.abs(rotDeg) * Math.PI) / 180;
+                        const ratio = Math.max(fittedW, fittedH) / Math.max(1, Math.min(fittedW, fittedH));
+                        const minRotZoom =
+                          Math.abs(rotDeg) >= 0.08
+                            ? (Math.cos(rotRad) + ratio * Math.sin(rotRad) - 1) * 100 + 0.45
+                            : 0;
+                        const effZoom = Math.max(Number(d.zoomPunchPct || 0), minRotZoom);
+                        return {
+                          transform: `${d.mirrorFlip ? 'scaleX(-1) ' : ''}${
+                            Math.abs(rotDeg) >= 0.08 ? `rotate(${rotDeg.toFixed(2)}deg) ` : ''
+                          }scale(${(1 + effZoom / 100).toFixed(3)})`,
+                          filter: `brightness(${(1 + (d.brightness || 0)).toFixed(
+                            3
+                          )}) contrast(${(d.contrast ?? 1).toFixed(3)}) saturate(${(
+                            d.saturation ?? 1
+                          ).toFixed(3)})${
+                            Math.abs(d.hueDeg || 0) >= 0.2
+                              ? ` hue-rotate(${(d.hueDeg || 0).toFixed(1)}deg)`
+                              : ''
+                          }`,
+                        };
+                      })()
                     : undefined
                 }
               >
@@ -546,6 +561,15 @@ export const PlayerMonitor: React.FC<Props> = ({
                     }
                   }}
                 />
+                {activeGroup?.dedup?.enabled && activeGroup.dedup.vignette && (
+                  <div
+                    className="pointer-events-none absolute inset-0"
+                    style={{
+                      background:
+                        'radial-gradient(ellipse at center, rgba(0,0,0,0) 58%, rgba(0,0,0,0.34) 100%)',
+                    }}
+                  />
+                )}
               </div>
 
               {/* Live CapCut Fancy Titles + Synced Subtitles + Brand Watermark + Safe Zone */}

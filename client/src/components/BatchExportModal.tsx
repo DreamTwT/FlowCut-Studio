@@ -2,22 +2,28 @@ import React, { useEffect, useState } from 'react';
 import {
   Archive,
   CheckCircle2,
+  Cpu,
   Download,
   Film,
   FolderOpen,
+  Gauge,
   Loader2,
   Play,
+  RefreshCw,
   Sparkles,
   StopCircle,
   X,
   AlertCircle,
+  Zap,
 } from 'lucide-react';
 import {
   AspectRatio,
   ExportQuality,
   getTargetDimensions,
+  HardwareAccelerationReport,
   ProjectData,
   RenderBatchJob,
+  VideoEncoderId,
 } from '@shared/schema';
 import {
   cancelBatchApi,
@@ -29,6 +35,9 @@ import { formatBytes } from '../utils/format';
 
 interface Props {
   project: ProjectData;
+  hardware: HardwareAccelerationReport | null;
+  probingHardware?: boolean;
+  onRefreshHardware?: () => void;
   specificGroupIds?: string[];
   initialBatch?: RenderBatchJob | null;
   onClose: () => void;
@@ -37,6 +46,9 @@ interface Props {
 
 export const BatchExportModal: React.FC<Props> = ({
   project,
+  hardware,
+  probingHardware = false,
+  onRefreshHardware,
   specificGroupIds,
   initialBatch = null,
   onClose,
@@ -46,6 +58,12 @@ export const BatchExportModal: React.FC<Props> = ({
   const [quality, setQuality] = useState<ExportQuality>(project.exportQuality || '1080p');
   const [fps, setFps] = useState<30 | 60>(project.exportFps || 30);
   const [crf, setCrf] = useState<20 | 23>(project.exportCrf || 23);
+  const [videoEncoder, setVideoEncoder] = useState<VideoEncoderId>(
+    project.videoEncoder || 'auto'
+  );
+  const [concurrency, setConcurrency] = useState<1 | 2 | 3 | 4>(
+    project.renderConcurrency || hardware?.recommendedConcurrency || 2
+  );
   const [pattern, setPattern] = useState(
     project.filenamePattern || '{project}_{index}_{group}'
   );
@@ -63,6 +81,8 @@ export const BatchExportModal: React.FC<Props> = ({
     }
     return g.selectedForExport;
   });
+
+  const dedupEnabledCount = targetGroups.filter((g) => g.dedup?.enabled).length;
 
   // Auto-start immediately if opened from "单导" (specificGroupIds)
   useEffect(() => {
@@ -94,6 +114,8 @@ export const BatchExportModal: React.FC<Props> = ({
         exportQuality: quality,
         exportFps: fps,
         exportCrf: crf,
+        videoEncoder,
+        renderConcurrency: concurrency,
         filenamePattern: pattern,
       });
       const updatedProject: ProjectData = {
@@ -102,6 +124,8 @@ export const BatchExportModal: React.FC<Props> = ({
         exportQuality: quality,
         exportFps: fps,
         exportCrf: crf,
+        videoEncoder,
+        renderConcurrency: concurrency,
         filenamePattern: pattern,
       };
       const started = await startBatchRenderApi(updatedProject, {
@@ -110,6 +134,8 @@ export const BatchExportModal: React.FC<Props> = ({
         quality,
         fps,
         crf,
+        videoEncoder,
+        concurrency,
         filenamePattern: pattern,
       });
       setBatch(started);
@@ -130,9 +156,13 @@ export const BatchExportModal: React.FC<Props> = ({
       : 100
     : 0;
 
+  const autoResolvedLabel =
+    hardware?.encoders.find((e) => e.id === hardware.recommendedEncoder)?.shortLabel ||
+    'CPU x264';
+
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-3xl bg-[#171922] border border-[#2C3144] rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+      <div className="w-full max-w-3xl bg-[#171922] border border-[#2C3144] rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
         {/* Header */}
         <div className="px-5 py-3.5 bg-[#12141B] border-b border-[#252938] flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -140,11 +170,14 @@ export const BatchExportModal: React.FC<Props> = ({
               <Sparkles className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white">
-                FFmpeg 批量生产渲染中心
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <span>FFmpeg 批量生产渲染中心</span>
+                <span className="px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] text-[10px] font-mono">
+                  v2.1 GPU加速引擎
+                </span>
               </h3>
               <p className="text-[11px] text-[#8A90A2]">
-                H.264 (libx264) + AAC 192kbps · 硬件友好流式合成 · 支持投放平台即传即播
+                支持 NVIDIA NVENC / Intel QSV / AMD AMF / Apple 硬件加速 + 异常无感热回退保护
               </p>
             </div>
           </div>
@@ -157,26 +190,120 @@ export const BatchExportModal: React.FC<Props> = ({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {!batch ? (
             /* Configuration View before Start */
             <div className="space-y-4">
-              <div className="p-3.5 rounded-xl bg-[#1E2230] border border-[#2F354A] flex items-center justify-between">
+              <div className="p-3.5 rounded-xl bg-[#1E2230] border border-[#2F354A] flex items-center justify-between gap-3">
                 <div>
                   <div className="text-xs font-semibold text-white">
                     本次待批量合成成片数量：
                     <span className="text-[#00E5FF] text-sm font-bold ml-1">
                       {targetGroups.length} 条
                     </span>
+                    {dedupEnabledCount > 0 && (
+                      <span className="ml-2 px-2 py-0.5 rounded bg-[#FFB800]/15 text-[#FFB800] text-[11px]">
+                        🛡️ 已启用 {dedupEnabledCount} 条四维防重
+                      </span>
+                    )}
                   </div>
                   <div className="text-[11px] text-[#9CA3AF] mt-0.5">
-                    输出像素尺寸：{dims.width} × {dims.height} px · 编码格式 MP4 (yuv420p + faststart)
+                    输出像素尺寸：{dims.width} × {dims.height} px · H.264 (yuv420p + faststart) · AAC 192kbps
                   </div>
                 </div>
-                <span className="px-2.5 py-1 rounded-full bg-[#00E5FF]/15 text-[#00E5FF] text-xs font-semibold">
+                <span className="px-2.5 py-1 rounded-full bg-[#00E5FF]/15 text-[#00E5FF] text-xs font-semibold shrink-0">
                   生产就绪
                 </span>
               </div>
+
+              {/* GPU Hardware Encoder & Worker Concurrency Card */}
+              {!isStandaloneBrowserMode && (
+                <div className="p-3.5 rounded-xl bg-[#131722] border border-[#2A334B] space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+                      <Zap className="w-3.5 h-3.5 text-emerald-400 fill-current" />
+                      <span>编码加速引擎与多线程并发</span>
+                      {hardware?.gpuNames?.length ? (
+                        <span className="text-[11px] font-normal text-[#8A90A2] truncate max-w-[280px]">
+                          ({hardware.gpuNames.join(' / ')})
+                        </span>
+                      ) : null}
+                    </div>
+                    {onRefreshHardware && (
+                      <button
+                        type="button"
+                        onClick={onRefreshHardware}
+                        className="px-2 py-1 rounded bg-[#1E2436] hover:bg-[#283048] text-[11px] text-[#00E5FF] flex items-center gap-1 transition"
+                      >
+                        <RefreshCw
+                          className={`w-3 h-3 ${probingHardware ? 'animate-spin' : ''}`}
+                        />
+                        重测显卡驱动
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                    {/* Encoder Selector */}
+                    <div className="md:col-span-7 space-y-1.5">
+                      <label className="text-[11px] text-[#B8C0D0] block">
+                        H.264 视频编码器（显卡异常时自动无感回退 x264）
+                      </label>
+                      <select
+                        value={videoEncoder}
+                        onChange={(e) => setVideoEncoder(e.target.value as VideoEncoderId)}
+                        className="w-full bg-[#1B2030] border border-[#313954] focus:border-[#00E5FF] rounded-lg px-2.5 py-2 text-xs text-white outline-none"
+                      >
+                        <option value="auto">
+                          ⚡ 自动优选硬件加速 (当前将调用: {autoResolvedLabel})
+                        </option>
+                        {(hardware?.encoders || []).map((enc) => (
+                          <option
+                            key={enc.id}
+                            value={enc.id}
+                            disabled={!enc.available && enc.id !== 'libx264'}
+                          >
+                            {enc.available ? '✓ ' : '✗ '}
+                            {enc.name}
+                            {!enc.available && enc.reason ? ` — ${enc.reason}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Concurrency Selector */}
+                    <div className="md:col-span-5 space-y-1.5">
+                      <label className="text-[11px] text-[#B8C0D0] flex items-center gap-1">
+                        <Gauge className="w-3 h-3 text-[#00E5FF]" />
+                        同时并行渲染路数
+                      </label>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {(
+                          [
+                            { n: 1, tag: '1路稳' },
+                            { n: 2, tag: '2路均' },
+                            { n: 3, tag: '3路快' },
+                            { n: 4, tag: '4路满' },
+                          ] as const
+                        ).map((c) => (
+                          <button
+                            key={c.n}
+                            type="button"
+                            onClick={() => setConcurrency(c.n)}
+                            className={`py-2 rounded-lg border text-xs font-semibold transition ${
+                              concurrency === c.n
+                                ? 'bg-[#00E5FF]/18 border-[#00E5FF] text-[#00E5FF]'
+                                : 'bg-[#1B2030] border-[#2C334A] text-[#9CA3AF] hover:text-white'
+                            }`}
+                          >
+                            {c.tag}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
@@ -250,7 +377,9 @@ export const BatchExportModal: React.FC<Props> = ({
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-[#D1D5DB]">画质码率控制</label>
+                  <label className="text-xs font-semibold text-[#D1D5DB]">
+                    等画质码率档位 (自动映射 GPU CQ/VBR 与 CPU CRF)
+                  </label>
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => setCrf(20)}
@@ -260,7 +389,7 @@ export const BatchExportModal: React.FC<Props> = ({
                           : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF]'
                       }`}
                     >
-                      高画质码率 (CRF 20)
+                      高画质投流档 (CRF 20 / CQ 21)
                     </button>
                     <button
                       onClick={() => setCrf(23)}
@@ -270,7 +399,7 @@ export const BatchExportModal: React.FC<Props> = ({
                           : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF]'
                       }`}
                     >
-                      均衡轻量体积 (CRF 23)
+                      均衡轻量档 (CRF 23 / CQ 24)
                     </button>
                   </div>
                 </div>
@@ -293,8 +422,8 @@ export const BatchExportModal: React.FC<Props> = ({
             <div className="space-y-4">
               {/* Overall Progress Card */}
               <div className="p-4 rounded-xl bg-[#12141C] border border-[#282D3E] space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs font-bold text-white">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-white flex-wrap">
                     {batch.status === 'running' ? (
                       <>
                         <Loader2 className="w-4 h-4 text-[#00E5FF] animate-spin" />
@@ -310,6 +439,12 @@ export const BatchExportModal: React.FC<Props> = ({
                     ) : (
                       <span className="text-amber-300">
                         渲染结束（已完成 {doneCount}/{batch.items.length} 条）
+                      </span>
+                    )}
+                    {batch.encoderResolved && (
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-mono flex items-center gap-1">
+                        <Cpu className="w-3 h-3" />
+                        {batch.encoderResolved} · {batch.concurrency || 2}路并发
                       </span>
                     )}
                   </div>
@@ -354,11 +489,19 @@ export const BatchExportModal: React.FC<Props> = ({
                           </span>
                         </div>
                       ) : item.status === 'done' ? (
-                        <div className="text-[11px] text-emerald-400 flex items-center gap-2">
+                        <div className="text-[11px] text-emerald-400 flex items-center gap-2 flex-wrap">
                           <span>✓ 合成完毕</span>
                           <span className="text-[#8A90A2]">
                             时长 {item.durationSec}s · 大小 {formatBytes(item.fileSizeBytes)}
+                            {item.elapsedMs
+                              ? ` · 耗时 ${(item.elapsedMs / 1000).toFixed(1)}s`
+                              : ''}
                           </span>
+                          {item.encoderUsed && (
+                            <span className="px-1.5 py-0.2 rounded bg-[#252B3D] text-[#00E5FF] text-[10px] font-mono">
+                              {item.encoderUsed}
+                            </span>
+                          )}
                         </div>
                       ) : (
                         <div className="text-[11px] text-red-400 flex items-center gap-1">
@@ -435,7 +578,7 @@ export const BatchExportModal: React.FC<Props> = ({
           {!batch ? (
             <>
               <span className="text-[11px] text-[#8A90A2]">
-                点击开始后将调用后端 FFmpeg 并发合成真实 MP4 文件
+                点击开始后将按所选引擎 ({videoEncoder === 'auto' ? autoResolvedLabel : videoEncoder}) 并发合成真实 MP4
               </span>
               <div className="flex items-center gap-2">
                 <button

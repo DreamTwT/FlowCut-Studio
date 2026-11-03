@@ -810,7 +810,13 @@ export function generateMatrixGroupsLocal(
       },
       subtitles: autoSubtitles,
       watermark: templateWatermark ? structuredClone(templateWatermark) : undefined,
-      dedup: matrix.autoDedup ? generateDedupVariant(idx, false) : undefined,
+      dedup: matrix.autoDedup
+        ? generateDedupVariant(
+            idx,
+            matrix.protectPackagingText === false,
+            matrix.dedupPreset || 'standard'
+          )
+        : undefined,
       bgmAssetId: bgms.length ? bgms[idx % bgms.length] : null,
       bgmVolume: chosenVoId ? 0.25 : 0.35,
       bgmDucking: Boolean(chosenVoId),

@@ -10,6 +10,34 @@ export type FitMode = 'cover' | 'blur' | 'contain';
 
 export type TransitionType = 'none' | 'fade' | 'wipeleft' | 'smoothup' | 'circleopen';
 
+export type VideoEncoderId =
+  | 'auto'
+  | 'h264_nvenc'
+  | 'h264_videotoolbox'
+  | 'h264_amf'
+  | 'h264_qsv'
+  | 'libx264';
+
+export type ResolvedVideoEncoderId = Exclude<VideoEncoderId, 'auto'>;
+
+export interface HardwareEncoderInfo {
+  id: ResolvedVideoEncoderId;
+  name: string;
+  shortLabel: string;
+  vendor: 'nvidia' | 'apple' | 'amd' | 'intel' | 'cpu';
+  available: boolean;
+  reason?: string;
+}
+
+export interface HardwareAccelerationReport {
+  probedAt: string;
+  gpuNames: string[];
+  hasHardwareGpu: boolean;
+  recommendedEncoder: ResolvedVideoEncoderId;
+  recommendedConcurrency: 1 | 2 | 3 | 4;
+  encoders: HardwareEncoderInfo[];
+}
+
 export type TitleStyleId =
   | 'douyin_yellow'
   | 'promo_red'
@@ -253,21 +281,77 @@ export interface WatermarkConfig {
   opacity: number;
 }
 
+export type DedupPresetId = 'light' | 'standard' | 'strong' | 'custom';
+
 export interface DedupConfig {
   enabled: boolean;
-  /** Horizontal mirror flip on underlying video picture ONLY (never flips titles, subtitles, or watermark!) */
+  preset?: DedupPresetId;
+  /**
+   * 1. Spatial Visual Hash Dispersion
+   * Applied ONLY to underlying video picture BEFORE titles/subtitles/watermarks!
+   */
   mirrorFlip: boolean;
   /** Subtle zoom-in crop percentage (0 ~ 8%), e.g. 3 means 103% scale to shift pixel hashes */
   zoomPunchPct: number;
+  /** Micro rotation angle (-1.2 ~ +1.2 deg); auto-zoomed so zero black corners appear */
+  rotateDeg?: number;
   /** FFmpeg eq brightness (-0.1 ~ +0.1), default 0 */
   brightness: number;
   /** FFmpeg eq contrast (0.9 ~ 1.15), default 1.0 */
   contrast: number;
   /** FFmpeg eq saturation (0.85 ~ 1.2), default 1.0 */
   saturation: number;
+  /** Subtle hue color-temperature shift (-5 ~ +5 deg) */
+  hueDeg?: number;
   /** Mild luma sharpen to alter macroblock fingerprint while enhancing crispness */
   sharpen: boolean;
+  /** Dynamic per-frame temporal micro-grain (0 ~ 6, FFmpeg noise=alls=N:allf=t) */
+  temporalGrain?: number;
+  /** Subtle natural optical vignette around corners */
+  vignette?: boolean;
+
+  /**
+   * 2. Temporal Sequence & Keyframe Dispersion
+   * Applied AFTER subtitle burn-in in lockstep to BOTH video & audio -> 100% lip/subtitle sync!
+   */
+  /** Global master tempo jitter (-3.0% ~ +3.5%), e.g. +2.1 -> 1.021x */
+  speedJitterPct?: number;
+  /** Randomize GOP keyframe interval (-g 46..74) to shift platform I-frame sampling */
+  randomGop?: boolean;
+
+  /**
+   * 3. Audio Chromaprint Fingerprint Dispersion
+   * 40Hz sub-bass cut + randomized transparent 2-band micro-EQ + subtle stereo width
+   */
+  audioFingerprint?: boolean;
+
+  /**
+   * 4. MP4 Container Scrubbing & Natural Camera Metadata
+   * Strips Lavf/encoder signatures (-map_metadata -1) & writes randomized recent creation_time
+   */
+  scrubMetadata?: boolean;
 }
+
+export const DEDUP_PRESETS: Record<
+  Exclude<DedupPresetId, 'custom'>,
+  { label: string; badge: string; desc: string }
+> = {
+  light: {
+    label: '轻度自然档',
+    badge: '品牌高画质',
+    desc: '微缩放 + 极轻色彩微扰 + 容器元数据清洗，保留极致原生画质',
+  },
+  standard: {
+    label: '标准投流档',
+    badge: '千川推荐',
+    desc: '空间微变 + 时变微胶片颗粒 + 全片微变速错帧 + 声纹微均衡 + 元数据清洗（极速不掉帧）',
+  },
+  strong: {
+    label: '强力矩阵过审档',
+    badge: '高密跑量',
+    desc: '全开四维防重 + 隐形微角度旋转扩边 + 光学暗角 + 随机GOP关键帧重构（适合20~60条同源裂变）',
+  },
+};
 
 export interface VideoGroup {
   id: string;
@@ -321,6 +405,8 @@ export interface MatrixConfig {
   voiceoverPoolAssetIds?: string[];
   autoSyncSubtitles?: boolean;
   autoDedup?: boolean;
+  dedupPreset?: Exclude<DedupPresetId, 'custom'>;
+  protectPackagingText?: boolean;
   defaultTransition: TransitionType;
   defaultFitMode: FitMode;
   strategy: 'balanced_limit' | 'all_cartesian';
@@ -336,6 +422,8 @@ export interface ProjectData {
   exportQuality: ExportQuality;
   exportFps: 30 | 60;
   exportCrf: 20 | 23;
+  videoEncoder?: VideoEncoderId;
+  renderConcurrency?: 1 | 2 | 3 | 4;
   filenamePattern: string; // e.g. "{project}_{index}_{group}"
   assets: MediaAsset[];
   videoGroups: VideoGroup[];
@@ -352,6 +440,8 @@ export interface RenderItemStatus {
   outputUrl?: string;
   fileSizeBytes?: number;
   durationSec?: number;
+  encoderUsed?: string;
+  elapsedMs?: number;
   error?: string;
   startedAt?: string;
   completedAt?: string;
@@ -364,6 +454,9 @@ export interface RenderBatchJob {
   aspectRatio: AspectRatio;
   quality: ExportQuality;
   fps: 30 | 60;
+  encoderRequested?: VideoEncoderId;
+  encoderResolved?: string;
+  concurrency?: number;
   createdAt: string;
   status: 'running' | 'completed' | 'cancelled' | 'partial_error';
   items: RenderItemStatus[];
@@ -607,13 +700,117 @@ export function createDefaultWatermarkConfig(): WatermarkConfig {
 export function createDefaultDedupConfig(): DedupConfig {
   return {
     enabled: false,
+    preset: 'standard',
     mirrorFlip: false,
     zoomPunchPct: 0,
+    rotateDeg: 0,
     brightness: 0,
     contrast: 1.0,
     saturation: 1.0,
+    hueDeg: 0,
     sharpen: false,
+    temporalGrain: 0,
+    vignette: false,
+    speedJitterPct: 0,
+    randomGop: true,
+    audioFingerprint: true,
+    scrubMetadata: true,
   };
+}
+
+/**
+ * Build a preset configuration for a single video group, or generate a unique
+ * 4-dimensional anti-duplicate variant for batch/matrix groups!
+ */
+export function buildDedupFromPreset(
+  preset: Exclude<DedupPresetId, 'custom'>,
+  index = 0,
+  allowMirror = false
+): DedupConfig {
+  const zoomsLight = [1.4, 2.0, 1.7, 2.4, 1.5, 2.2, 1.9, 2.6];
+  const zoomsStd = [2.2, 3.1, 3.8, 2.6, 4.2, 2.9, 3.5, 4.5];
+  const zoomsStrong = [3.6, 4.8, 5.6, 4.2, 6.2, 4.5, 5.2, 6.0];
+
+  const brights = [0.015, -0.015, 0.025, -0.01, 0.01, 0.03, -0.02, 0.02];
+  const contrasts = [1.03, 0.98, 1.04, 1.02, 0.97, 1.05, 1.01, 1.04];
+  const sats = [1.04, 0.97, 1.06, 0.98, 1.03, 1.08, 0.96, 1.05];
+  const hues = [1.8, -1.6, 2.6, -2.2, 1.4, -2.8, 2.2, -1.9];
+  const speeds = [1.6, -1.5, 2.3, -2.1, 1.2, 2.7, -1.8, 2.0];
+  const rotates = [0.55, -0.6, 0.75, -0.7, 0.5, -0.8, 0.65, -0.55];
+
+  const k = Math.abs(index) % 8;
+  const jitter = Math.round((Math.random() * 0.5 - 0.25) * 100) / 100;
+  const spdJitter = Math.round((Math.random() * 0.6 - 0.3) * 10) / 10;
+
+  if (preset === 'light') {
+    return {
+      enabled: true,
+      preset: 'light',
+      mirrorFlip: allowMirror ? k % 2 === 1 : false,
+      zoomPunchPct: Math.max(1.0, Math.round((zoomsLight[k] + jitter) * 10) / 10),
+      rotateDeg: 0,
+      brightness: Math.round(brights[k] * 0.6 * 1000) / 1000,
+      contrast: contrasts[k],
+      saturation: sats[k],
+      hueDeg: 0,
+      sharpen: false,
+      temporalGrain: 0,
+      vignette: false,
+      speedJitterPct: 0,
+      randomGop: true,
+      audioFingerprint: false,
+      scrubMetadata: true,
+    };
+  }
+
+  if (preset === 'strong') {
+    return {
+      enabled: true,
+      preset: 'strong',
+      mirrorFlip: allowMirror ? k % 2 === 1 : false,
+      zoomPunchPct: Math.max(2.5, Math.round((zoomsStrong[k] + jitter) * 10) / 10),
+      rotateDeg: rotates[k],
+      brightness: brights[k],
+      contrast: contrasts[k],
+      saturation: sats[k],
+      hueDeg: hues[k],
+      sharpen: true,
+      temporalGrain: k % 2 === 0 ? 4 : 3,
+      vignette: true,
+      speedJitterPct: Math.round((speeds[k] * 1.15 + spdJitter) * 10) / 10,
+      randomGop: true,
+      audioFingerprint: true,
+      scrubMetadata: true,
+    };
+  }
+
+  // 'standard' (Recommended for Qianchuan / Douyin daily feed ads: fast + 4D coverage)
+  return {
+    enabled: true,
+    preset: 'standard',
+    mirrorFlip: allowMirror ? k % 2 === 1 : false,
+    zoomPunchPct: Math.max(1.6, Math.round((zoomsStd[k] + jitter) * 10) / 10),
+    rotateDeg: 0,
+    brightness: brights[k],
+    contrast: contrasts[k],
+    saturation: sats[k],
+    hueDeg: Math.round(hues[k] * 0.75 * 10) / 10,
+    sharpen: k % 2 === 0,
+    temporalGrain: 2,
+    vignette: false,
+    speedJitterPct: Math.round((speeds[k] + spdJitter) * 10) / 10,
+    randomGop: true,
+    audioFingerprint: true,
+    scrubMetadata: true,
+  };
+}
+
+export function generateDedupVariant(
+  index: number,
+  allowMirror = false,
+  preset: Exclude<DedupPresetId, 'custom'> = 'standard'
+): DedupConfig {
+  return buildDedupFromPreset(preset, index, allowMirror);
 }
 
 /**
@@ -702,23 +899,3 @@ export function exportCuesToSrt(cues: SubtitleCue[]): string {
     .map((c, idx) => `${idx + 1}\n${fmt(c.startSec)} --> ${fmt(c.endSec)}\n${c.text}\n`)
     .join('\n');
 }
-
-export function generateDedupVariant(index: number, allowMirror = false): DedupConfig {
-  // Deterministic + jittered subtle variation so every group in a batch gets a unique visual hash
-  const zooms = [1.8, 2.6, 3.4, 4.2, 2.2, 3.8, 4.8, 3.0];
-  const brights = [0.02, -0.02, 0.03, -0.01, 0.01, 0.04, -0.03, 0.02];
-  const contrasts = [1.03, 0.98, 1.05, 1.02, 0.97, 1.04, 1.01, 1.06];
-  const sats = [1.05, 0.96, 1.08, 0.98, 1.04, 1.1, 0.95, 1.03];
-  const k = index % zooms.length;
-  const jitter = Math.round((Math.random() * 0.6 - 0.3) * 100) / 100;
-  return {
-    enabled: true,
-    mirrorFlip: allowMirror ? index % 2 === 1 : false,
-    zoomPunchPct: Math.max(1, Math.round((zooms[k] + jitter) * 10) / 10),
-    brightness: brights[k],
-    contrast: contrasts[k],
-    saturation: sats[k],
-    sharpen: index % 2 === 0,
-  };
-}
-

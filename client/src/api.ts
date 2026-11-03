@@ -5,12 +5,14 @@ import {
   ExportQuality,
   FULL_CROP,
   getTargetDimensions,
+  HardwareAccelerationReport,
   MatrixConfig,
   MediaAsset,
   ProjectData,
   RenderBatchJob,
   SceneTag,
   TTS_VOICES,
+  VideoEncoderId,
 } from '@shared/schema';
 import {
   RenderedSubtitleStrip,
@@ -270,6 +272,34 @@ export async function generateMatrixGroupsApi(
   return res.json();
 }
 
+export async function fetchHardwareReportApi(
+  forceRefresh = false
+): Promise<HardwareAccelerationReport> {
+  if (isStandaloneBrowserMode) {
+    return {
+      probedAt: new Date().toISOString(),
+      gpuNames: ['浏览器 WebCanvas 媒体引擎'],
+      hasHardwareGpu: false,
+      recommendedEncoder: 'libx264',
+      recommendedConcurrency: 2,
+      encoders: [
+        {
+          id: 'libx264',
+          name: '浏览器离线录制引擎',
+          shortLabel: 'Web 引擎',
+          vendor: 'cpu',
+          available: true,
+        },
+      ],
+    };
+  }
+  const qs = forceRefresh ? '?refresh=1' : '';
+  const res = await fetch(`/api/hardware${qs}`);
+  if (!res.ok) throw new Error('探测硬件编码器失败');
+  const data = await res.json();
+  return data.hardware;
+}
+
 export async function startBatchRenderApi(
   project: ProjectData,
   options: {
@@ -278,6 +308,8 @@ export async function startBatchRenderApi(
     quality?: ExportQuality;
     fps?: 30 | 60;
     crf?: 20 | 23;
+    videoEncoder?: VideoEncoderId;
+    concurrency?: 1 | 2 | 3 | 4;
     filenamePattern?: string;
   }
 ): Promise<RenderBatchJob> {

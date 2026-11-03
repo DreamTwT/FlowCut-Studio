@@ -11,10 +11,13 @@ import {
   createDefaultDedupConfig,
   createDefaultSubtitleConfig,
   createDefaultWatermarkConfig,
+  DEDUP_PRESETS,
   DedupConfig,
+  DedupPresetId,
   FULL_CROP,
   generateDedupVariant,
   GroupOverlayConfig,
+  HardwareAccelerationReport,
   MediaAsset,
   ProjectData,
   SceneTag,
@@ -30,6 +33,7 @@ import {
   deleteAssetApi,
   deleteProjectApi,
   fetchBootstrap,
+  fetchHardwareReportApi,
   generateMatrixGroupsApi,
   importProjectJson,
   loadProjectById,
@@ -68,6 +72,8 @@ function makeClip(asset: MediaAsset): TimelineClip {
 export const App: React.FC = () => {
   const [project, setProject] = useState<ProjectData | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [hardware, setHardware] = useState<HardwareAccelerationReport | null>(null);
+  const [probingHardware, setProbingHardware] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // Undo / Redo stacks
@@ -115,8 +121,34 @@ export const App: React.FC = () => {
     }, 3200);
   }, []);
 
+  const refreshHardware = useCallback(
+    async (notify = false) => {
+      setProbingHardware(true);
+      try {
+        const rep = await fetchHardwareReportApi(notify);
+        setHardware(rep);
+        if (notify) {
+          const encName =
+            rep.encoders.find((e) => e.id === rep.recommendedEncoder)?.name ||
+            rep.recommendedEncoder;
+          showToast(
+            rep.hasHardwareGpu
+              ? `⚡ 显卡加速已就绪：${encName}`
+              : `ℹ️ 当前使用 CPU 多核 x264 编码（未检测到可用 GPU 硬件编码会话）`
+          );
+        }
+      } catch {
+        // ignore
+      } finally {
+        setProbingHardware(false);
+      }
+    },
+    [showToast]
+  );
+
   // Initial load
   useEffect(() => {
+    void refreshHardware(false);
     fetchBootstrap()
       .then((data) => {
         setProject(data.project);
@@ -724,16 +756,20 @@ export const App: React.FC = () => {
           return d;
         })
       }
-      onBatchRandomizeDedupAllGroups={(allowMirror: boolean) => {
+      onBatchRandomizeDedupAllGroups={(allowMirror, preset) => {
         updateProject((d) => {
           d.videoGroups.forEach((g, idx) => {
-            g.dedup = generateDedupVariant(idx + Math.floor(Math.random() * 7), allowMirror);
+            g.dedup = generateDedupVariant(
+              idx + Math.floor(Math.random() * 7),
+              allowMirror,
+              preset
+            );
           });
           return d;
         });
         setMonitorMode('program');
         showToast(
-          `🛡️ 已为全部 ${project.videoGroups.length} 条成片组生成差异化防重指纹参数！`
+          `🛡️ 已按「${DEDUP_PRESETS[preset].label}」为全部 ${project.videoGroups.length} 条成片组生成四维差异化指纹！`
         );
       }}
       onUpdateGroupAudio={(groupId, patch) =>
@@ -1119,6 +1155,9 @@ export const App: React.FC = () => {
       <TopHeader
         project={project}
         projects={projects}
+        hardware={hardware}
+        probingHardware={probingHardware}
+        onRefreshHardware={() => void refreshHardware(true)}
         workspaceLayout={workspaceLayout}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
@@ -1397,6 +1436,9 @@ export const App: React.FC = () => {
       {exportModalState.open && (
         <BatchExportModal
           project={project}
+          hardware={hardware}
+          probingHardware={probingHardware}
+          onRefreshHardware={() => void refreshHardware(true)}
           specificGroupIds={exportModalState.specificGroupIds}
           onClose={() => setExportModalState({ open: false })}
           onProjectExportSettingsChange={(patch) =>

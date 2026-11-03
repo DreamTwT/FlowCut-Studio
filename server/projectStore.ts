@@ -440,7 +440,13 @@ export function generateGroupsFromMatrix(
             }
           : undefined,
       watermark: templateWm ? structuredClone(templateWm) : undefined,
-      dedup: matrix.autoDedup ? generateDedupVariant(idx, false) : undefined,
+      dedup: matrix.autoDedup
+        ? generateDedupVariant(
+            idx,
+            matrix.protectPackagingText === false,
+            matrix.dedupPreset || 'standard'
+          )
+        : undefined,
       bgmAssetId: bgmCandidates.length > 0 ? bgmCandidates[idx % bgmCandidates.length] : null,
       bgmVolume: chosenVo ? 0.26 : 0.35,
       bgmDucking: true,

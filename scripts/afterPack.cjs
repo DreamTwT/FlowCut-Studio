@@ -60,14 +60,20 @@ exports.default = async function afterPack(context) {
         iconFile.icons.map((item) => item.data)
       );
 
-      // 2. Update Windows File Properties / Task Manager title
+      // 2. Update Windows File Properties / Task Manager title dynamically from package.json version
+      const rawVer = String(context.packager.appInfo.version || '2.1.0')
+        .split('-')[0]
+        .split('.')
+        .map((n) => parseInt(n, 10) || 0);
+      const [vMaj = 2, vMin = 1, vPatch = 0] = rawVer;
+
       const viList = resedit.Resource.VersionInfo.fromEntries(res.entries);
       if (viList.length > 0) {
         const vi = viList[0];
         const langs = vi.getAllLanguagesForStringValues();
         const targetLang = langs.length > 0 ? langs[0] : { lang: 1033, codepage: 1200 };
-        vi.setFileVersion(2, 0, 3, 0, targetLang.lang);
-        vi.setProductVersion(2, 0, 3, 0, targetLang.lang);
+        vi.setFileVersion(vMaj, vMin, vPatch, 0, targetLang.lang);
+        vi.setProductVersion(vMaj, vMin, vPatch, 0, targetLang.lang);
         vi.setStringValues(targetLang, {
           CompanyName: 'FlowCut Studio',
           FileDescription: '流剪矩阵 FlowCut Pro - 短视频批量混剪工作台',
