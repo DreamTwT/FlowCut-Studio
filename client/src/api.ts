@@ -1,0 +1,653 @@
+import {
+  AspectRatio,
+  BreathRemovalOptions,
+  buildSyncedSubtitlesFromScript,
+  ExportQuality,
+  FULL_CROP,
+  getTargetDimensions,
+  MatrixConfig,
+  MediaAsset,
+  ProjectData,
+  RenderBatchJob,
+  SceneTag,
+  TTS_VOICES,
+} from '@shared/schema';
+import {
+  RenderedSubtitleStrip,
+  renderGroupStaticLayerPngDataUrl,
+  renderSubtitleCuesToStrips,
+} from './utils/overlayCanvas';
+import {
+  createSimulatedSpeechWavInBrowser,
+  processAudioInBrowser,
+} from './utils/audioWaveform';
+import { uid } from './utils/format';
+import {
+  buildLocalDemoProject,
+  cancelLocalBatch,
+  createLocalBlankProject,
+  deleteLocalProjectById,
+  generateMatrixGroupsLocal,
+  getLocalBatchStatus,
+  getLocalBootstrap,
+  listLocalProjectSummaries,
+  loadLocalProjectById,
+  probeBrowserFile,
+  saveLocalProject,
+  startLocalBatchRender,
+} from './localEngine';
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  updatedAt: string;
+  groupCount: number;
+  assetCount: number;
+}
+
+export let isStandaloneBrowserMode = false;
+
+export async function fetchBootstrap(): Promise<{
+  project: ProjectData;
+  projects: ProjectSummary[];
+  recentBatches: RenderBatchJob[];
+}> {
+  if (
+    typeof window !== 'undefined' &&
+    (window.location.protocol === 'file:' ||
+      window.location.protocol === 'blob:' ||
+      window.location.protocol === 'about:' ||
+      window.origin === 'null')
+  ) {
+    isStandaloneBrowserMode = true;
+    return getLocalBootstrap();
+  }
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 1800);
+    const res = await fetch('/api/bootstrap', { signal: controller.signal });
+    window.clearTimeout(timer);
+    if (!res.ok) throw new Error('Backend unavailable');
+    isStandaloneBrowserMode = false;
+    return await res.json();
+  } catch {
+    isStandaloneBrowserMode = true;
+    return getLocalBootstrap();
+  }
+}
+
+export async function createNewProject(name: string): Promise<{
+  project: ProjectData;
+  projects: ProjectSummary[];
+}> {
+  if (isStandaloneBrowserMode) {
+    const proj = createLocalBlankProject(name);
+    return { project: proj, projects: listLocalProjectSummaries() };
+  }
+  const res = await fetch('/api/projects/new', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error('新建项目失败');
+  return res.json();
+}
+
+export async function createDemoProject(): Promise<{
+  project: ProjectData;
+  projects: ProjectSummary[];
+}> {
+  if (isStandaloneBrowserMode) {
+    const demo = saveLocalProject(buildLocalDemoProject());
+    return { project: demo, projects: listLocalProjectSummaries() };
+  }
+  const res = await fetch('/api/projects/demo', { method: 'POST' });
+  if (!res.ok) throw new Error('加载演示工程失败');
+  return res.json();
+}
+
+export async function loadProjectById(id: string): Promise<{
+  project: ProjectData;
+  projects: ProjectSummary[];
+}> {
+  if (isStandaloneBrowserMode) {
+    return {
+      project: loadLocalProjectById(id),
+      projects: listLocalProjectSummaries(),
+    };
+  }
+  const res = await fetch(`/api/projects/${id}`);
+  if (!res.ok) throw new Error('切换项目失败');
+  return res.json();
+}
+
+export async function deleteProjectApi(
+  targetId: string,
+  currentActiveId?: string
+): Promise<{
+  project: ProjectData;
+  projects: ProjectSummary[];
+  switchedActive: boolean;
+  deletedName: string;
+}> {
+  if (isStandaloneBrowserMode) {
+    return deleteLocalProjectById(targetId, currentActiveId);
+  }
+  const qs = currentActiveId
+    ? `?activeId=${encodeURIComponent(currentActiveId)}`
+    : '';
+  const res = await fetch(`/api/projects/${encodeURIComponent(targetId)}${qs}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('删除工程失败');
+  return res.json();
+}
+
+export async function importProjectJson(project: ProjectData): Promise<{
+  project: ProjectData;
+  projects: ProjectSummary[];
+}> {
+  if (isStandaloneBrowserMode) {
+    const saved = saveLocalProject({ ...project, name: `${project.name} (导入)` });
+    return { project: saved, projects: listLocalProjectSummaries() };
+  }
+  const res = await fetch('/api/projects/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project }),
+  });
+  if (!res.ok) throw new Error('导入工程失败');
+  return res.json();
+}
+
+export async function saveProjectApi(project: ProjectData): Promise<ProjectData> {
+  if (isStandaloneBrowserMode) {
+    return saveLocalProject(project);
+  }
+  const res = await fetch(`/api/projects/${project.id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(project),
+  });
+  if (!res.ok) throw new Error('保存失败');
+  const data = await res.json();
+  return data.project;
+}
+
+export async function uploadAssetsWithProgress(
+  projectId: string,
+  files: File[],
+  sceneTag: SceneTag,
+  onProgress: (pct: number) => void
+): Promise<{ assets: MediaAsset[]; project: ProjectData }> {
+  if (isStandaloneBrowserMode) {
+    const proj = loadLocalProjectById(projectId);
+    const created: MediaAsset[] = [];
+    for (let i = 0; i < files.length; i++) {
+      onProgress(Math.round(((i + 0.3) / files.length) * 90));
+      const asset = await probeBrowserFile(files[i], sceneTag);
+      proj.assets.unshift(asset);
+      created.push(asset);
+    }
+    onProgress(100);
+    saveLocalProject(proj);
+    return { assets: created, project: proj };
+  }
+
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    for (const f of files) {
+      fd.append('files', f);
+    }
+    fd.append('sceneTag', sceneTag);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/projects/${projectId}/assets/upload`);
+
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable) {
+        onProgress(Math.min(95, Math.round((ev.loaded / ev.total) * 95)));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          onProgress(100);
+          resolve(JSON.parse(xhr.responseText));
+        } catch (err) {
+          reject(err);
+        }
+      } else {
+        try {
+          const parsed = JSON.parse(xhr.responseText);
+          reject(new Error(parsed.error || '上传失败'));
+        } catch {
+          reject(new Error(`上传错误 (${xhr.status})`));
+        }
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('网络异常，上传中断'));
+    xhr.send(fd);
+  });
+}
+
+export async function deleteAssetApi(projectId: string, assetId: string): Promise<ProjectData> {
+  if (isStandaloneBrowserMode) {
+    const proj = loadLocalProjectById(projectId);
+    proj.assets = proj.assets.filter((a) => a.id !== assetId);
+    for (const g of proj.videoGroups) {
+      g.clips = g.clips.filter((c) => c.assetId !== assetId);
+      if (g.bgmAssetId === assetId) g.bgmAssetId = null;
+    }
+    for (const s of proj.matrix.slots) {
+      s.assetIds = s.assetIds.filter((id) => id !== assetId);
+    }
+    return saveLocalProject(proj);
+  }
+  const res = await fetch(`/api/projects/${projectId}/assets/${assetId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('删除素材失败');
+  const data = await res.json();
+  return data.project;
+}
+
+export async function generateMatrixGroupsApi(
+  project: ProjectData,
+  matrix?: MatrixConfig
+): Promise<{ project: ProjectData; generatedCount: number; totalPossible: number }> {
+  if (isStandaloneBrowserMode) {
+    return generateMatrixGroupsLocal(project, matrix);
+  }
+  const res = await fetch(`/api/projects/${project.id}/matrix/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, matrix }),
+  });
+  if (!res.ok) throw new Error('生成矩阵视频组失败');
+  return res.json();
+}
+
+export async function startBatchRenderApi(
+  project: ProjectData,
+  options: {
+    groupIds?: string[];
+    aspectRatio?: AspectRatio;
+    quality?: ExportQuality;
+    fps?: 30 | 60;
+    crf?: 20 | 23;
+    filenamePattern?: string;
+  }
+): Promise<RenderBatchJob> {
+  if (isStandaloneBrowserMode) {
+    return startLocalBatchRender(project, options);
+  }
+
+  // Pre-rasterize Fancy Title + Brand Watermark + Timed Subtitle Strips via native browser Canvas
+  // so Windows/Mac servers never need native C++ sharp/libass and get 100% crisp OS CJK + Emoji!
+  const ar = options.aspectRatio || project.aspectRatio || '9:16';
+  const qual = options.quality || project.exportQuality || '1080p';
+  const { width: outW, height: outH } = getTargetDimensions(ar, qual);
+  const assetMap = new Map<string, MediaAsset>(project.assets.map((a) => [a.id, a]));
+  const overlayPngMap: Record<string, string> = {};
+  const subtitleStripsMap: Record<string, RenderedSubtitleStrip[]> = {};
+
+  for (const g of project.videoGroups) {
+    if (options.groupIds && options.groupIds.length > 0 && !options.groupIds.includes(g.id)) {
+      continue;
+    }
+    if (!options.groupIds && !g.selectedForExport) continue;
+    try {
+      const pngDataUrl = await renderGroupStaticLayerPngDataUrl(g, assetMap, outW, outH);
+      if (pngDataUrl) overlayPngMap[g.id] = pngDataUrl;
+    } catch {
+      // fallback to server renderer if any
+    }
+    try {
+      const strips = renderSubtitleCuesToStrips(g.subtitles, outW, outH);
+      if (strips.length > 0) subtitleStripsMap[g.id] = strips;
+    } catch {
+      // fallback to server renderer if any
+    }
+  }
+
+  const res = await fetch(`/api/projects/${project.id}/render`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project,
+      options: {
+        ...options,
+        overlayPngMap,
+        subtitleStripsMap,
+      },
+    }),
+  });
+  if (!res.ok) throw new Error('启动批量渲染失败');
+  const data = await res.json();
+  return data.batch;
+}
+
+export async function pollBatchStatusApi(batchId: string): Promise<RenderBatchJob> {
+  if (isStandaloneBrowserMode) {
+    const b = getLocalBatchStatus(batchId);
+    if (!b) throw new Error('找不到批次');
+    return structuredClone(b);
+  }
+  const res = await fetch(`/api/renders/${batchId}`);
+  if (!res.ok) throw new Error('查询渲染状态失败');
+  const data = await res.json();
+  return data.batch;
+}
+
+export async function cancelBatchApi(batchId: string): Promise<RenderBatchJob> {
+  if (isStandaloneBrowserMode) {
+    const b = cancelLocalBatch(batchId);
+    if (!b) throw new Error('找不到批次');
+    return structuredClone(b);
+  }
+  const res = await fetch(`/api/renders/${batchId}/cancel`, { method: 'POST' });
+  if (!res.ok) throw new Error('取消任务失败');
+  const data = await res.json();
+  return data.batch;
+}
+
+export interface BreathStatsDto {
+  originalDuration: number;
+  newDuration: number;
+  savedSec: number;
+  cutCount: number;
+}
+
+export async function synthesizeTtsApi(
+  project: ProjectData,
+  payload: {
+    scripts: string[];
+    voiceId: string;
+    ratePct: number;
+    pitchHz: number;
+    titleName?: string;
+    removeBreath: boolean;
+    breathOptions?: Partial<BreathRemovalOptions>;
+    assignMode: 'library_only' | 'active_group' | 'dispatch_groups' | 'matrix_pool';
+    targetGroupId?: string;
+    autoSubtitles?: boolean;
+  }
+): Promise<{
+  assets: MediaAsset[];
+  breathStats: Array<BreathStatsDto | undefined>;
+  project: ProjectData;
+}> {
+  if (isStandaloneBrowserMode) {
+    const clone = structuredClone(project);
+    const created: MediaAsset[] = [];
+    const statsList: Array<BreathStatsDto | undefined> = [];
+    const voiceMeta = TTS_VOICES.find((v) => v.id === payload.voiceId) || TTS_VOICES[0];
+    const voiceShort = voiceMeta.name.split('·')[0].trim();
+
+    for (const script of payload.scripts) {
+      const sim = createSimulatedSpeechWavInBrowser(script, payload.ratePct);
+      let finalUrl = sim.blobUrl;
+      let finalDur = sim.duration;
+      let finalSize = sim.sizeBytes;
+      let bStats: BreathStatsDto | undefined;
+
+      if (payload.removeBreath) {
+        const cleaned = await processAudioInBrowser(sim.blobUrl, {
+          removeBreath: true,
+          breathOptions: payload.breathOptions,
+        });
+        finalUrl = cleaned.blobUrl;
+        finalDur = cleaned.newDuration;
+        finalSize = cleaned.sizeBytes;
+        bStats = {
+          originalDuration: cleaned.originalDuration,
+          newDuration: cleaned.newDuration,
+          savedSec: cleaned.savedSec,
+          cutCount: cleaned.cutCount,
+        };
+      }
+
+      const snippet = script.replace(/\s+/g, '').slice(0, 12);
+      const asset: MediaAsset = {
+        id: uid(),
+        name:
+          (payload.scripts.length === 1 ? payload.titleName?.trim() : undefined) ||
+          `AI配音_${voiceShort}_${snippet}${payload.removeBreath ? '(已去气口)' : ''}`,
+        type: 'audio',
+        audioRole: 'voiceover',
+        ttsSourceText: script,
+        ttsVoiceId: payload.voiceId,
+        breathRemoved: payload.removeBreath,
+        breathSavedSec: bStats?.savedSec,
+        breathCutCount: bStats?.cutCount,
+        filename: `tts_${Date.now()}.wav`,
+        url: finalUrl,
+        duration: finalDur,
+        width: 0,
+        height: 0,
+        fps: 0,
+        hasAudio: true,
+        sizeBytes: finalSize,
+        sceneTag: '未分类',
+        defaultTrimStart: 0,
+        defaultTrimEnd: finalDur,
+        defaultCrop: { ...FULL_CROP },
+        defaultFitMode: 'cover',
+        createdAt: new Date().toISOString(),
+      };
+      clone.assets.unshift(asset);
+      created.push(asset);
+      statsList.push(bStats);
+    }
+
+    if (payload.assignMode === 'active_group' && created[0]) {
+      const grp =
+        clone.videoGroups.find((g) => g.id === payload.targetGroupId) || clone.videoGroups[0];
+      if (grp) {
+        grp.voiceoverAssetId = created[0].id;
+        grp.voiceoverVolume = grp.voiceoverVolume ?? 1.15;
+        grp.bgmDucking = true;
+        if (payload.autoSubtitles !== false && created[0].ttsSourceText) {
+          grp.subtitles = {
+            enabled: true,
+            styleId: grp.subtitles?.styleId || 'douyin_yellow',
+            yPercent: grp.subtitles?.yPercent || 74,
+            fontScale: grp.subtitles?.fontScale || 1.0,
+            cues: buildSyncedSubtitlesFromScript(
+              created[0].ttsSourceText,
+              created[0].duration,
+              grp.voiceoverDelaySec || 0
+            ),
+          };
+        }
+      }
+    } else if (payload.assignMode === 'dispatch_groups' && created.length > 0) {
+      clone.videoGroups.forEach((g, idx) => {
+        const picked = created[idx % created.length];
+        g.voiceoverAssetId = picked.id;
+        g.voiceoverVolume = g.voiceoverVolume ?? 1.15;
+        g.bgmDucking = true;
+        if (payload.autoSubtitles !== false && picked.ttsSourceText) {
+          g.subtitles = {
+            enabled: true,
+            styleId: g.subtitles?.styleId || 'douyin_yellow',
+            yPercent: g.subtitles?.yPercent || 74,
+            fontScale: g.subtitles?.fontScale || 1.0,
+            cues: buildSyncedSubtitlesFromScript(
+              picked.ttsSourceText,
+              picked.duration,
+              g.voiceoverDelaySec || 0
+            ),
+          };
+        }
+      });
+    } else if (payload.assignMode === 'matrix_pool' && created.length > 0) {
+      clone.matrix.voiceoverPoolAssetIds = Array.from(
+        new Set([...(clone.matrix.voiceoverPoolAssetIds || []), ...created.map((a) => a.id)])
+      );
+    }
+
+    saveLocalProject(clone);
+    return { assets: created, breathStats: statsList, project: clone };
+  }
+
+  const res = await fetch(`/api/projects/${project.id}/tts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project,
+      ...payload,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '文字生成音频失败');
+  return data;
+}
+
+export async function removeAudioBreathApi(
+  project: ProjectData,
+  assetId: string,
+  options: {
+    replaceInPlace?: boolean;
+    breathOptions?: Partial<BreathRemovalOptions>;
+  }
+): Promise<{
+  asset: MediaAsset;
+  breathStats: BreathStatsDto;
+  project: ProjectData;
+}> {
+  if (isStandaloneBrowserMode) {
+    const clone = structuredClone(project);
+    const src = clone.assets.find((a) => a.id === assetId);
+    if (!src) throw new Error('找不到目标音频');
+    const cleaned = await processAudioInBrowser(src.url, {
+      removeBreath: true,
+      breathOptions: options.breathOptions,
+    });
+    const stats: BreathStatsDto = {
+      originalDuration: cleaned.originalDuration,
+      newDuration: cleaned.newDuration,
+      savedSec: cleaned.savedSec,
+      cutCount: cleaned.cutCount,
+    };
+
+    if (options.replaceInPlace !== false) {
+      src.url = cleaned.blobUrl;
+      src.duration = cleaned.newDuration;
+      src.sizeBytes = cleaned.sizeBytes;
+      src.defaultTrimStart = 0;
+      src.defaultTrimEnd = cleaned.newDuration;
+      if (!src.name.includes('去气口')) src.name = `${src.name}(已去气口)`;
+      src.breathRemoved = true;
+      src.breathSavedSec = stats.savedSec;
+      src.breathCutCount = stats.cutCount;
+      saveLocalProject(clone);
+      return { asset: src, breathStats: stats, project: clone };
+    } else {
+      const copy: MediaAsset = {
+        ...structuredClone(src),
+        id: uid(),
+        name: `${src.name}(已去气口)`,
+        url: cleaned.blobUrl,
+        duration: cleaned.newDuration,
+        sizeBytes: cleaned.sizeBytes,
+        defaultTrimStart: 0,
+        defaultTrimEnd: cleaned.newDuration,
+        breathRemoved: true,
+        breathSavedSec: stats.savedSec,
+        breathCutCount: stats.cutCount,
+      };
+      clone.assets.unshift(copy);
+      saveLocalProject(clone);
+      return { asset: copy, breathStats: stats, project: clone };
+    }
+  }
+
+  const res = await fetch(`/api/projects/${project.id}/assets/${assetId}/remove-breath`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project,
+      ...options,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '音频去气口失败');
+  return data;
+}
+
+export async function renderEditedAudioApi(
+  project: ProjectData,
+  assetId: string,
+  params: {
+    trimStart: number;
+    trimEnd: number;
+    speed: number;
+    fadeInSec: number;
+    fadeOutSec: number;
+    removeBreath: boolean;
+    breathOptions?: Partial<BreathRemovalOptions>;
+    newName?: string;
+  }
+): Promise<{
+  asset: MediaAsset;
+  breathStats?: BreathStatsDto;
+  project: ProjectData;
+}> {
+  if (isStandaloneBrowserMode) {
+    const clone = structuredClone(project);
+    const src = clone.assets.find((a) => a.id === assetId);
+    if (!src) throw new Error('找不到目标音频');
+    const proc = await processAudioInBrowser(src.url, {
+      trimStart: params.trimStart,
+      trimEnd: params.trimEnd,
+      fadeInSec: params.fadeInSec,
+      fadeOutSec: params.fadeOutSec,
+      removeBreath: params.removeBreath,
+      breathOptions: params.breathOptions,
+    });
+    const newAsset: MediaAsset = {
+      ...structuredClone(src),
+      id: uid(),
+      name: params.newName?.trim() || `${src.name}${params.removeBreath ? '(去气口精剪)' : '(精剪版)'}`,
+      url: proc.blobUrl,
+      duration: proc.newDuration,
+      sizeBytes: proc.sizeBytes,
+      defaultTrimStart: 0,
+      defaultTrimEnd: proc.newDuration,
+      defaultSpeed: params.speed,
+      breathRemoved: params.removeBreath || src.breathRemoved,
+      breathSavedSec: params.removeBreath ? proc.savedSec : src.breathSavedSec,
+      breathCutCount: params.removeBreath ? proc.cutCount : src.breathCutCount,
+    };
+    clone.assets.unshift(newAsset);
+    saveLocalProject(clone);
+    return {
+      asset: newAsset,
+      breathStats: params.removeBreath
+        ? {
+            originalDuration: proc.originalDuration,
+            newDuration: proc.newDuration,
+            savedSec: proc.savedSec,
+            cutCount: proc.cutCount,
+          }
+        : undefined,
+      project: clone,
+    };
+  }
+
+  const res = await fetch(`/api/projects/${project.id}/assets/${assetId}/audio-edit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project,
+      ...params,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '音频剪辑导出失败');
+  return data;
+}

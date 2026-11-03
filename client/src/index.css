@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@layer base {
+  :root,
+  html {
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+    user-select: none;
+  }
+
+  input, textarea, [contenteditable="true"] {
+    user-select: text;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+    background-color: #0F1014;
+    color: #ECEEF2;
+    color-scheme: dark;
+  }
+
+  select,
+  option {
+    background-color: #171A24;
+    color: #ECEEF2;
+  }
+}
+
+/* Custom Jianying Dark Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #14151A;
+}
+::-webkit-scrollbar-thumb {
+  background: #2C303B;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3E4454;
+}
+
+/* Jianying Cyan Range Input */
+input[type="range"].jy-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #282B36;
+  height: 4px;
+  border-radius: 999px;
+  outline: none;
+}
+input[type="range"].jy-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #00E5FF;
+  border: 2px solid #0F1014;
+  box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.5);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+input[type="range"].jy-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.18);
+}
+
+/* Checkerboard background for crop/canvas stage */
+.stage-grid {
+  background-color: #0B0C0F;
+  background-image: radial-gradient(#1E212B 1px, transparent 1px);
+  background-size: 16px 16px;
+}

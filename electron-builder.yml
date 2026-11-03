@@ -1,0 +1,65 @@
+appId: com.flowcut.pro.studio
+productName: FlowCutPro
+copyright: Copyright (C) 2026 FlowCut Studio
+electronVersion: "33.2.0"
+npmRebuild: false
+asar: true
+afterPack: scripts/afterPack.cjs
+
+electronDownload:
+  mirror: "https://cdn.npmmirror.com/binaries/electron/"
+  customDir: "v33.2.0"
+
+directories:
+  output: release-desktop
+  buildResources: desktop
+
+files:
+  - desktop/main.cjs
+  - desktop/preload.cjs
+  - desktop/icon.png
+  - desktop/icon.ico
+  - runtime/server.cjs
+  - public-app/**/*
+  - bin/**/*
+  - package.json
+  - node_modules/**/*
+
+asarUnpack:
+  - runtime/server.cjs
+  - public-app/**/*
+  - bin/**/*
+  - node_modules/**/*
+
+win:
+  icon: desktop/icon.ico
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: "FlowCut-Pro-Setup-v${version}-${arch}.${ext}"
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: desktop/icon.ico
+  uninstallerIcon: desktop/icon.ico
+  installerHeaderIcon: desktop/icon.ico
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "流剪矩阵 FlowCut Pro"
+
+portable:
+  artifactName: "FlowCut-Pro-Portable-v${version}-${arch}.exe"
+
+mac:
+  icon: desktop/icon.png
+  category: public.app-category.video
+  target:
+    - dmg
+    - zip
