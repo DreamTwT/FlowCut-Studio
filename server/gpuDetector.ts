@@ -140,9 +140,14 @@ async function dryRunSingleEncoder(
     );
     return { ok: true };
   } catch (err: any) {
-    const rawMsg = String(err?.stderr || err?.message || '硬件驱动未就绪').trim();
-    const firstLine = rawMsg.split(/\r?\n/).pop() || '当前设备未启用该硬件编码器';
-    return { ok: false, reason: firstLine.slice(0, 120) };
+    const rawMsg = String(err?.stderr || err?.message || '').toLowerCase();
+    let friendly = '未检测到对应显卡硬件';
+    if (rawMsg.includes('driver') || rawMsg.includes('version') || rawMsg.includes('api')) {
+      friendly = '显卡驱动版本过旧';
+    } else if (rawMsg.includes('cannot load') || rawMsg.includes('not found')) {
+      friendly = '未安装对应显卡驱动';
+    }
+    return { ok: false, reason: friendly };
   }
 }
 

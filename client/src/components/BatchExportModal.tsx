@@ -32,6 +32,7 @@ import {
   startBatchRenderApi,
 } from '../api';
 import { formatBytes } from '../utils/format';
+import { CustomSelect, SelectOption } from './CustomSelect';
 
 interface Props {
   project: ProjectData;
@@ -160,6 +161,32 @@ export const BatchExportModal: React.FC<Props> = ({
     hardware?.encoders.find((e) => e.id === hardware.recommendedEncoder)?.shortLabel ||
     'CPU x264';
 
+  const encoderOptions: SelectOption<VideoEncoderId>[] = [
+    {
+      value: 'auto',
+      label: '⚡ 自动优选硬件加速',
+      rightMeta: `当前调用: ${autoResolvedLabel}`,
+      metaTone: 'cyan',
+    },
+    ...(hardware?.encoders || []).map((enc): SelectOption<VideoEncoderId> => {
+      const isAvail = enc.available || enc.id === 'libx264';
+      let shortReason = '未检测到该显卡';
+      if (enc.reason) {
+        if (enc.reason.includes('macOS')) shortReason = '仅 macOS';
+        else if (enc.reason.includes('AMD') && enc.reason.includes('Windows')) shortReason = '仅 Windows';
+        else if (enc.reason.includes('驱动')) shortReason = '需更新驱动';
+        else if (enc.reason.length <= 12) shortReason = enc.reason;
+      }
+      return {
+        value: enc.id,
+        label: enc.name,
+        rightMeta: isAvail ? '✓ 已就绪' : shortReason,
+        metaTone: isAvail ? 'emerald' : 'muted',
+        disabled: !isAvail,
+      };
+    }),
+  ];
+
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="w-full max-w-3xl bg-[#171922] border border-[#2C3144] rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
@@ -244,31 +271,18 @@ export const BatchExportModal: React.FC<Props> = ({
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-                    {/* Encoder Selector */}
-                    <div className="md:col-span-7 space-y-1.5">
-                      <label className="text-[11px] text-[#B8C0D0] block">
+                    {/* Custom Dark Jianying-Style Encoder Selector */}
+                    <div className="md:col-span-7 space-y-1.5 min-w-0">
+                      <label className="text-[11px] text-[#B8C0D0] block truncate">
                         H.264 视频编码器（显卡异常时自动无感回退 x264）
                       </label>
-                      <select
+                      <CustomSelect<VideoEncoderId>
                         value={videoEncoder}
-                        onChange={(e) => setVideoEncoder(e.target.value as VideoEncoderId)}
-                        className="w-full bg-[#1B2030] border border-[#313954] focus:border-[#00E5FF] rounded-lg px-2.5 py-2 text-xs text-white outline-none"
-                      >
-                        <option value="auto">
-                          ⚡ 自动优选硬件加速 (当前将调用: {autoResolvedLabel})
-                        </option>
-                        {(hardware?.encoders || []).map((enc) => (
-                          <option
-                            key={enc.id}
-                            value={enc.id}
-                            disabled={!enc.available && enc.id !== 'libx264'}
-                          >
-                            {enc.available ? '✓ ' : '✗ '}
-                            {enc.name}
-                            {!enc.available && enc.reason ? ` — ${enc.reason}` : ''}
-                          </option>
-                        ))}
-                      </select>
+                        options={encoderOptions}
+                        onChange={(val) => setVideoEncoder(val)}
+                        menuMinWidth={360}
+                        className="w-full h-9 !bg-[#1B2030] !border-[#313954] hover:!border-[#455073]"
+                      />
                     </div>
 
                     {/* Concurrency Selector */}
@@ -290,7 +304,7 @@ export const BatchExportModal: React.FC<Props> = ({
                             key={c.n}
                             type="button"
                             onClick={() => setConcurrency(c.n)}
-                            className={`py-2 rounded-lg border text-xs font-semibold transition ${
+                            className={`h-9 rounded-lg border text-xs font-semibold whitespace-nowrap flex items-center justify-center transition ${
                               concurrency === c.n
                                 ? 'bg-[#00E5FF]/18 border-[#00E5FF] text-[#00E5FF]'
                                 : 'bg-[#1B2030] border-[#2C334A] text-[#9CA3AF] hover:text-white'
@@ -319,7 +333,7 @@ export const BatchExportModal: React.FC<Props> = ({
                       <button
                         key={opt.id}
                         onClick={() => setAspectRatio(opt.id)}
-                        className={`py-2 px-2 rounded-lg border text-xs font-medium transition ${
+                        className={`h-9 px-2 rounded-lg border text-xs font-medium whitespace-nowrap flex items-center justify-center transition ${
                           aspectRatio === opt.id
                             ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
                             : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF] hover:text-white'
@@ -336,7 +350,7 @@ export const BatchExportModal: React.FC<Props> = ({
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => setQuality('1080p')}
-                      className={`py-2 px-3 rounded-lg border text-xs font-medium transition ${
+                      className={`h-9 px-3 rounded-lg border text-xs font-medium whitespace-nowrap flex items-center justify-center transition ${
                         quality === '1080p'
                           ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
                           : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF] hover:text-white'
@@ -346,7 +360,7 @@ export const BatchExportModal: React.FC<Props> = ({
                     </button>
                     <button
                       onClick={() => setQuality('720p')}
-                      className={`py-2 px-3 rounded-lg border text-xs font-medium transition ${
+                      className={`h-9 px-3 rounded-lg border text-xs font-medium whitespace-nowrap flex items-center justify-center transition ${
                         quality === '720p'
                           ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
                           : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF] hover:text-white'
@@ -364,10 +378,10 @@ export const BatchExportModal: React.FC<Props> = ({
                       <button
                         key={f}
                         onClick={() => setFps(f)}
-                        className={`py-2 rounded-lg border text-xs font-mono transition ${
+                        className={`h-9 rounded-lg border text-xs font-mono whitespace-nowrap flex items-center justify-center transition ${
                           fps === f
                             ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
-                            : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF]'
+                            : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF] hover:text-white'
                         }`}
                       >
                         {f} FPS
@@ -377,29 +391,34 @@ export const BatchExportModal: React.FC<Props> = ({
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-[#D1D5DB]">
-                    等画质码率档位 (自动映射 GPU CQ/VBR 与 CPU CRF)
+                  <label
+                    className="text-xs font-semibold text-[#D1D5DB] block truncate"
+                    title="自动将 CRF 20/23 等画质映射为 GPU 硬件编码器的 CQ/VBR 参数或 CPU x264 CRF"
+                  >
+                    画质码率档位 (自动适配 GPU / CPU)
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => setCrf(20)}
-                      className={`py-2 rounded-lg border text-xs transition ${
+                      title="GPU NVENC CQ 21 (VBR HQ) / CPU CRF 20 高画质投流码率"
+                      className={`h-9 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap flex items-center justify-center transition ${
                         crf === 20
                           ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
-                          : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF]'
+                          : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF] hover:text-white'
                       }`}
                     >
-                      高画质投流档 (CRF 20 / CQ 21)
+                      高画质投流 (CRF 20)
                     </button>
                     <button
                       onClick={() => setCrf(23)}
-                      className={`py-2 rounded-lg border text-xs transition ${
+                      title="GPU NVENC CQ 24 (VBR HQ) / CPU CRF 23 均衡轻量码率"
+                      className={`h-9 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap flex items-center justify-center transition ${
                         crf === 23
                           ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
-                          : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF]'
+                          : 'bg-[#1C1F2B] border-[#2B3042] text-[#9CA3AF] hover:text-white'
                       }`}
                     >
-                      均衡轻量档 (CRF 23 / CQ 24)
+                      均衡轻量 (CRF 23)
                     </button>
                   </div>
                 </div>

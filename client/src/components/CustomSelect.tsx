@@ -6,6 +6,8 @@ export interface SelectOption<T extends string = string> {
   value: T;
   label: string;
   rightMeta?: string;
+  metaTone?: 'default' | 'emerald' | 'cyan' | 'amber' | 'muted';
+  disabled?: boolean;
   icon?: React.ReactNode;
 }
 
@@ -122,8 +124,10 @@ export function CustomSelect<T extends string = string>({
         );
       } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < options.length) {
         e.preventDefault();
-        onChange(options[highlightIdx].value);
-        setOpen(false);
+        if (!options[highlightIdx].disabled) {
+          onChange(options[highlightIdx].value);
+          setOpen(false);
+        }
       }
     };
 
@@ -214,26 +218,46 @@ export function CustomSelect<T extends string = string>({
           >
             {options.map((opt, idx) => {
               const isSelected = opt.value === value;
-              const isHighlighted = idx === highlightIdx;
+              const isDisabled = Boolean(opt.disabled);
+              const isHighlighted = !isDisabled && idx === highlightIdx;
               const activeClass =
                 accent === 'amber'
                   ? 'bg-[#FFB800]/16 text-[#FFB800] font-semibold'
                   : 'bg-[#00E5FF]/15 text-[#00E5FF] font-semibold';
 
+              const metaToneClass =
+                opt.metaTone === 'emerald'
+                  ? 'px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                  : opt.metaTone === 'cyan'
+                  ? 'px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/30'
+                  : opt.metaTone === 'amber'
+                  ? 'px-1.5 py-0.5 rounded bg-[#FFB800]/15 text-[#FFB800] border border-[#FFB800]/30'
+                  : opt.metaTone === 'muted'
+                  ? 'text-[#646B7E]'
+                  : isSelected
+                  ? 'opacity-90'
+                  : 'text-[#7E8596]';
+
               return (
                 <button
                   key={`${String(opt.value)}_${idx}`}
                   type="button"
-                  onMouseEnter={() => setHighlightIdx(idx)}
+                  disabled={isDisabled}
+                  onMouseEnter={() => {
+                    if (!isDisabled) setHighlightIdx(idx);
+                  }}
                   onClick={(e) => {
                     if (stopPropagation) e.stopPropagation();
+                    if (isDisabled) return;
                     onChange(opt.value);
                     setOpen(false);
                   }}
-                  className={`w-full px-2.5 py-1.5 rounded-lg text-left transition flex items-center justify-between gap-2 ${
+                  className={`w-full px-2.5 py-2 rounded-lg text-left transition flex items-center justify-between gap-2 ${
                     size === 'xs' ? 'text-[11px]' : 'text-xs'
                   } ${
-                    isSelected
+                    isDisabled
+                      ? 'opacity-45 cursor-not-allowed text-[#7E8596]'
+                      : isSelected
                       ? activeClass
                       : isHighlighted
                       ? 'bg-[#252B3E] text-white'
@@ -247,15 +271,11 @@ export function CustomSelect<T extends string = string>({
 
                   <span className="flex items-center gap-1.5 shrink-0">
                     {opt.rightMeta && (
-                      <span
-                        className={`text-[10px] font-mono ${
-                          isSelected ? 'opacity-90' : 'text-[#7E8596]'
-                        }`}
-                      >
+                      <span className={`text-[10px] font-mono whitespace-nowrap ${metaToneClass}`}>
                         {opt.rightMeta}
                       </span>
                     )}
-                    {isSelected && (
+                    {isSelected && !isDisabled && (
                       <Check
                         className={`w-3.5 h-3.5 shrink-0 ${
                           accent === 'amber' ? 'text-[#FFB800]' : 'text-[#00E5FF]'
