@@ -1,9 +1,13 @@
 import {
+  AiEngineSettings,
+  AiScriptGenerateRequest,
   AspectRatio,
   BreathRemovalOptions,
   buildSyncedSubtitlesFromScript,
+  createDefaultAiSettings,
   ExportQuality,
   FULL_CROP,
+  GeneratedAdScriptItem,
   getTargetDimensions,
   HardwareAccelerationReport,
   MatrixConfig,
@@ -11,6 +15,8 @@ import {
   ProjectData,
   RenderBatchJob,
   SceneTag,
+  SpeechSegmentPayload,
+  SubtitleCue,
   TTS_VOICES,
   VideoEncoderId,
 } from '@shared/schema';
@@ -397,6 +403,7 @@ export async function synthesizeTtsApi(
   project: ProjectData,
   payload: {
     scripts: string[];
+    scriptOverlays?: Array<{ topTitle?: string; bottomTitle?: string }>;
     voiceId: string;
     ratePct: number;
     pitchHz: number;
@@ -482,6 +489,14 @@ export async function synthesizeTtsApi(
         grp.voiceoverAssetId = created[0].id;
         grp.voiceoverVolume = grp.voiceoverVolume ?? 1.15;
         grp.bgmDucking = true;
+        if (payload.scriptOverlays?.[0]) {
+          if (payload.scriptOverlays[0].topTitle) {
+            grp.overlay.topTitle = payload.scriptOverlays[0].topTitle;
+          }
+          if (payload.scriptOverlays[0].bottomTitle) {
+            grp.overlay.bottomTitle = payload.scriptOverlays[0].bottomTitle;
+          }
+        }
         if (payload.autoSubtitles !== false && created[0].ttsSourceText) {
           grp.subtitles = {
             enabled: true,
@@ -498,10 +513,19 @@ export async function synthesizeTtsApi(
       }
     } else if (payload.assignMode === 'dispatch_groups' && created.length > 0) {
       clone.videoGroups.forEach((g, idx) => {
-        const picked = created[idx % created.length];
+        const pIdx = idx % created.length;
+        const picked = created[pIdx];
         g.voiceoverAssetId = picked.id;
         g.voiceoverVolume = g.voiceoverVolume ?? 1.15;
         g.bgmDucking = true;
+        if (payload.scriptOverlays?.[pIdx]) {
+          if (payload.scriptOverlays[pIdx].topTitle) {
+            g.overlay.topTitle = payload.scriptOverlays[pIdx].topTitle!;
+          }
+          if (payload.scriptOverlays[pIdx].bottomTitle) {
+            g.overlay.bottomTitle = payload.scriptOverlays[pIdx].bottomTitle!;
+          }
+        }
         if (payload.autoSubtitles !== false && picked.ttsSourceText) {
           g.subtitles = {
             enabled: true,
@@ -520,6 +544,20 @@ export async function synthesizeTtsApi(
       clone.matrix.voiceoverPoolAssetIds = Array.from(
         new Set([...(clone.matrix.voiceoverPoolAssetIds || []), ...created.map((a) => a.id)])
       );
+      if (payload.scriptOverlays?.length) {
+        const tops = payload.scriptOverlays.map((o) => o.topTitle?.trim()).filter(Boolean) as string[];
+        const bots = payload.scriptOverlays
+          .map((o) => o.bottomTitle?.trim())
+          .filter(Boolean) as string[];
+        if (tops.length) {
+          clone.matrix.topTitlePool = Array.from(new Set([...tops, ...clone.matrix.topTitlePool]));
+        }
+        if (bots.length) {
+          clone.matrix.bottomTitlePool = Array.from(
+            new Set([...bots, ...clone.matrix.bottomTitlePool])
+          );
+        }
+      }
     }
 
     saveLocalProject(clone);
@@ -683,3 +721,138 @@ export async function renderEditedAudioApi(
   if (!res.ok) throw new Error(data?.error || '音频剪辑导出失败');
   return data;
 }
+
+// ============================================================================
+// v2.2 — AI Engine Settings, Ad Script Fission & Dual-Mode ASR APIs
+// ============================================================================
+
+const LOCAL_AI_SETTINGS_KEY = 'flowcut_ai_settings_v22';
+
+export async function fetchAiSettingsApi(): Promise<AiEngineSettings> {
+  if (isStandaloneBrowserMode) {
+    try {
+      const raw = localStorage.getItem(LOCAL_AI_SETTINGS_KEY);
+      if (raw) return { ...createDefaultAiSettings(), ...JSON.parse(raw) };
+    } catch {
+      // ignore
+    }
+    return createDefaultAiSettings();
+  }
+  const res = await fetch('/api/ai/settings');
+  if (!res.ok) return createDefaultAiSettings();
+  const data = await res.json();
+  return data.settings;
+}
+
+export async function saveAiSettingsApi(
+  settings: Partial<AiEngineSettings>
+): Promise<AiEngineSettings> {
+  if (isStandaloneBrowserMode) {
+    const merged = { ...(await fetchAiSettingsApi()), ...settings };
+    try {
+      localStorage.setItem(LOCAL_AI_SETTINGS_KEY, JSON.stringify(merged));
+    } catch {
+      // ignore
+    }
+    return merged;
+  }
+  const res = await fetch('/api/ai/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '保存 AI 配置失败');
+  return data.settings;
+}
+
+export async function testAiConnectionApi(
+  settings: Partial<AiEngineSettings>
+): Promise<{ ok: boolean; latencyMs: number; message: string }> {
+  if (isStandaloneBrowserMode) {
+    return {
+      ok: false,
+      latencyMs: 0,
+      message: '纯单文件预览模式请启动完整客户端以连接大模型',
+    };
+  }
+  const res = await fetch('/api/ai/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings }),
+  });
+  return res.json();
+}
+
+export async function generateAiScriptsApi(req: AiScriptGenerateRequest): Promise<{
+  scripts: GeneratedAdScriptItem[];
+  engineUsed: 'cloud_llm' | 'offline_formula';
+  modelName: string;
+  fallbackNote?: string;
+}> {
+  if (isStandaloneBrowserMode) {
+    const prod = req.productName || '宝藏好物';
+    const pts = req.sellingPoints || '硬核升级体验';
+    const cta = req.ctaOffer || '点击下方链接抢限时福利';
+    return {
+      scripts: Array.from({ length: req.count || 4 }).map((_, i) => ({
+        id: uid(),
+        angleBadge: `离线方案#${i + 1}`,
+        topTitle: `${prod.slice(0, 8)}实测太香了`,
+        bottomTitle: `👇 ${cta.slice(0, 12)}`,
+        spokenScript: `还在挑好用的${prod}？实测${pts}，省心耐用不踩雷，赶紧${cta}！`,
+        estDurationSec: 9.5,
+      })),
+      engineUsed: 'offline_formula',
+      modelName: '浏览器离线公式',
+    };
+  }
+  const res = await fetch('/api/ai/scripts/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || 'AI 裂变脚本生成失败');
+  return data;
+}
+
+export async function runCloudAsrForGroupApi(
+  project: ProjectData,
+  groupId: string,
+  sourceTrack: 'auto' | 'voiceover' | 'video_clips' = 'auto'
+): Promise<{
+  cues: SubtitleCue[];
+  segmentCount: number;
+  sourceLabel: string;
+  modelUsed: string;
+  project: ProjectData;
+}> {
+  const res = await fetch(`/api/projects/${project.id}/groups/${groupId}/asr/cloud`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, sourceTrack }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '云端语音识别失败');
+  return data;
+}
+
+export async function prepareLocalAsrSegmentsApi(
+  project: ProjectData,
+  groupId: string,
+  sourceTrack: 'auto' | 'voiceover' | 'video_clips' = 'auto'
+): Promise<{
+  segments: SpeechSegmentPayload[];
+  sourceLabel: string;
+}> {
+  const res = await fetch(`/api/projects/${project.id}/groups/${groupId}/asr/prepare-local`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, sourceTrack }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '提取人声片段失败');
+  return data;
+}
+

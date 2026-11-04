@@ -15,6 +15,17 @@ import {
 } from './paths.js';
 import { ensureFfmpegReady } from './ffmpegBootstrap.js';
 import { probeHardwareAcceleration } from './gpuDetector.js';
+import {
+  generateAdScripts,
+  loadAiSettings,
+  saveAiSettings,
+  testAiConnection,
+} from './aiScriptService.js';
+import {
+  prepareGroupSegmentsForLocalWasm,
+  serveCachedHfModelFile,
+  transcribeGroupViaCloudAsr,
+} from './asrService.js';
 import { decodeUploadFilename, probeAndProcessFile } from './mediaService.js';
 import {
   BreathRemovalResult,
@@ -102,6 +113,101 @@ app.get('/api/hardware', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err?.message || '硬件加速探测失败' });
   }
+});
+
+// ============================================================================
+// AI Engine Settings, Ad Script Fission & Dual-Mode ASR Speech-to-Subtitles
+// ============================================================================
+app.get('/api/ai/settings', (_req, res) => {
+  res.json({ settings: loadAiSettings() });
+});
+
+app.put('/api/ai/settings', (req, res) => {
+  try {
+    const saved = saveAiSettings(req.body?.settings || req.body || {});
+    res.json({ settings: saved });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || '保存 AI 配置失败' });
+  }
+});
+
+app.post('/api/ai/test', async (req, res) => {
+  try {
+    const result = await testAiConnection(req.body?.settings);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ ok: false, latencyMs: 0, message: err?.message || '连接测试失败' });
+  }
+});
+
+app.post('/api/ai/scripts/generate', async (req, res) => {
+  try {
+    const result = await generateAdScripts(req.body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'AI 脚本生成失败' });
+  }
+});
+
+app.post('/api/projects/:id/groups/:groupId/asr/cloud', async (req, res) => {
+  try {
+    let proj = loadProject(req.params.id);
+    if (req.body?.project) {
+      proj = saveProject(req.body.project as ProjectData);
+    }
+    if (!proj) {
+      res.status(404).json({ error: '找不到目标项目' });
+      return;
+    }
+    const group = proj.videoGroups.find((g) => g.id === req.params.groupId);
+    if (!group) {
+      res.status(404).json({ error: '找不到目标视频组' });
+      return;
+    }
+    const sourceTrack = req.body?.sourceTrack || 'auto';
+    const result = await transcribeGroupViaCloudAsr(proj, group, sourceTrack);
+    group.subtitles = {
+      enabled: true,
+      styleId: group.subtitles?.styleId || 'douyin_yellow',
+      yPercent: group.subtitles?.yPercent || 74,
+      fontScale: group.subtitles?.fontScale || 1.0,
+      cues: result.cues,
+    };
+    const saved = saveProject(proj);
+    res.json({
+      ...result,
+      project: saved,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || '云端语音识别失败' });
+  }
+});
+
+app.post('/api/projects/:id/groups/:groupId/asr/prepare-local', async (req, res) => {
+  try {
+    let proj = loadProject(req.params.id);
+    if (req.body?.project) {
+      proj = saveProject(req.body.project as ProjectData);
+    }
+    if (!proj) {
+      res.status(404).json({ error: '找不到目标项目' });
+      return;
+    }
+    const group = proj.videoGroups.find((g) => g.id === req.params.groupId);
+    if (!group) {
+      res.status(404).json({ error: '找不到目标视频组' });
+      return;
+    }
+    const sourceTrack = req.body?.sourceTrack || 'auto';
+    const prepared = await prepareGroupSegmentsForLocalWasm(proj, group, sourceTrack);
+    res.json(prepared);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || '初始化本地离线语音识别失败' });
+  }
+});
+
+app.use('/api/asr/hf-model', (req, res) => {
+  void serveCachedHfModelFile(req.path, res);
 });
 
 app.post('/api/system/open-exports', async (req, res) => {
@@ -296,6 +402,8 @@ app.post('/api/projects/:id/tts', async (req, res) => {
     const assignMode: string = req.body?.assignMode || 'library_only';
     const targetGroupId: string | undefined = req.body?.targetGroupId;
     const autoSubtitles = req.body?.autoSubtitles !== false;
+    const scriptOverlays: Array<{ topTitle?: string; bottomTitle?: string }> | undefined =
+      Array.isArray(req.body?.scriptOverlays) ? req.body.scriptOverlays : undefined;
 
     if (assignMode === 'active_group' && createdAssets[0]) {
       const grp =
@@ -304,6 +412,12 @@ app.post('/api/projects/:id/tts', async (req, res) => {
         grp.voiceoverAssetId = createdAssets[0].id;
         grp.voiceoverVolume = grp.voiceoverVolume ?? 1.15;
         grp.bgmDucking = true;
+        if (scriptOverlays?.[0]) {
+          if (scriptOverlays[0].topTitle) grp.overlay.topTitle = scriptOverlays[0].topTitle;
+          if (scriptOverlays[0].bottomTitle) {
+            grp.overlay.bottomTitle = scriptOverlays[0].bottomTitle;
+          }
+        }
         if (autoSubtitles && createdAssets[0].ttsSourceText) {
           grp.subtitles = {
             enabled: true,
@@ -320,10 +434,19 @@ app.post('/api/projects/:id/tts', async (req, res) => {
       }
     } else if (assignMode === 'dispatch_groups' && createdAssets.length > 0) {
       proj.videoGroups.forEach((g, idx) => {
-        const picked = createdAssets[idx % createdAssets.length];
+        const pickedIdx = idx % createdAssets.length;
+        const picked = createdAssets[pickedIdx];
         g.voiceoverAssetId = picked.id;
         g.voiceoverVolume = g.voiceoverVolume ?? 1.15;
         g.bgmDucking = true;
+        if (scriptOverlays?.[pickedIdx]) {
+          if (scriptOverlays[pickedIdx].topTitle) {
+            g.overlay.topTitle = scriptOverlays[pickedIdx].topTitle!;
+          }
+          if (scriptOverlays[pickedIdx].bottomTitle) {
+            g.overlay.bottomTitle = scriptOverlays[pickedIdx].bottomTitle!;
+          }
+        }
         if (autoSubtitles && picked.ttsSourceText) {
           g.subtitles = {
             enabled: true,
@@ -343,6 +466,20 @@ app.post('/api/projects/:id/tts', async (req, res) => {
       proj.matrix.voiceoverPoolAssetIds = Array.from(
         new Set([...existing, ...createdAssets.map((a) => a.id)])
       );
+      if (scriptOverlays && scriptOverlays.length > 0) {
+        const newTops = scriptOverlays.map((o) => o.topTitle?.trim()).filter(Boolean) as string[];
+        const newBots = scriptOverlays
+          .map((o) => o.bottomTitle?.trim())
+          .filter(Boolean) as string[];
+        if (newTops.length > 0) {
+          proj.matrix.topTitlePool = Array.from(new Set([...newTops, ...proj.matrix.topTitlePool]));
+        }
+        if (newBots.length > 0) {
+          proj.matrix.bottomTitlePool = Array.from(
+            new Set([...newBots, ...proj.matrix.bottomTitlePool])
+          );
+        }
+      }
     }
 
     const saved = saveProject(proj);
@@ -607,18 +744,7 @@ async function startServer() {
   };
 
   const listenWithFallback = (portToTry: number, maxPort: number) => {
-    const onError = (err: any) => {
-      if (isProd && err?.code === 'EADDRINUSE' && portToTry < maxPort) {
-        console.log(`[提示] 端口 ${portToTry} 已被占用，正在自动切换至端口 ${portToTry + 1}...`);
-        httpServer.removeListener('error', onError);
-        listenWithFallback(portToTry + 1, maxPort);
-      } else {
-        console.error('[启动失败]', err?.message || err);
-        process.exit(1);
-      }
-    };
-    httpServer.once('error', onError);
-    httpServer.listen(portToTry, '0.0.0.0', () => {
+    const onListening = () => {
       httpServer.removeListener('error', onError);
       console.log(
         `[FlowCut Pro] Unified Production Workbench listening on http://0.0.0.0:${portToTry}`
@@ -630,7 +756,20 @@ async function startServer() {
         console.log('========================================================');
       }
       void openBrowserIfRequested(portToTry);
-    });
+    };
+    const onError = (err: any) => {
+      httpServer.removeListener('listening', onListening);
+      if (isProd && err?.code === 'EADDRINUSE' && portToTry < maxPort) {
+        console.log(`[提示] 端口 ${portToTry} 已被占用，正在自动切换至端口 ${portToTry + 1}...`);
+        listenWithFallback(portToTry + 1, maxPort);
+      } else {
+        console.error('[启动失败]', err?.message || err);
+        process.exit(1);
+      }
+    };
+    httpServer.once('error', onError);
+    httpServer.once('listening', onListening);
+    httpServer.listen(portToTry, '0.0.0.0');
   };
 
   listenWithFallback(PORT, isProd ? PORT + 10 : PORT);

@@ -899,3 +899,212 @@ export function exportCuesToSrt(cues: SubtitleCue[]): string {
     .map((c, idx) => `${idx + 1}\n${fmt(c.startSec)} --> ${fmt(c.endSec)}\n${c.text}\n`)
     .join('\n');
 }
+
+// ============================================================================
+// v2.2 — AI Ad Script Fission & Dual-Mode Speech-to-Subtitle (ASR) Schemas
+// ============================================================================
+
+export type AiProviderId =
+  | 'siliconflow'
+  | 'deepseek'
+  | 'aliyun_bailian'
+  | 'zhipu'
+  | 'doubao'
+  | 'ollama_local'
+  | 'openai_custom';
+
+export interface AiProviderPreset {
+  id: AiProviderId;
+  name: string;
+  badge: string;
+  baseUrl: string;
+  defaultLlmModel: string;
+  suggestedModels: string[];
+  supportsCloudAsr: boolean;
+  defaultAsrModel?: string;
+  keyHint: string;
+}
+
+export const AI_PROVIDER_PRESETS: Record<AiProviderId, AiProviderPreset> = {
+  siliconflow: {
+    id: 'siliconflow',
+    name: '硅基流动 SiliconFlow',
+    badge: '一Key双通·含免费ASR',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    defaultLlmModel: 'Qwen/Qwen2.5-7B-Instruct',
+    suggestedModels: [
+      'Qwen/Qwen2.5-7B-Instruct',
+      'deepseek-ai/DeepSeek-V3',
+      'Qwen/Qwen2.5-72B-Instruct',
+    ],
+    supportsCloudAsr: true,
+    defaultAsrModel: 'FunAudioLLM/SenseVoiceSmall',
+    keyHint: '填入硅基流动 sk-... 密钥，可同时免费调用 Qwen2.5-7B 与阿里 SenseVoice 语音识别',
+  },
+  deepseek: {
+    id: 'deepseek',
+    name: 'DeepSeek 官方直连',
+    badge: '爆款文案王',
+    baseUrl: 'https://api.deepseek.com/v1',
+    defaultLlmModel: 'deepseek-chat',
+    suggestedModels: ['deepseek-chat', 'deepseek-reasoner'],
+    supportsCloudAsr: false,
+    keyHint: '填入 platform.deepseek.com 的 API Key，中文电商网感极强',
+  },
+  aliyun_bailian: {
+    id: 'aliyun_bailian',
+    name: '阿里云百炼 (通义千问)',
+    badge: '国内高稳',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    defaultLlmModel: 'qwen-plus',
+    suggestedModels: ['qwen-plus', 'qwen-max', 'qwen-turbo'],
+    supportsCloudAsr: false,
+    keyHint: '填入阿里云百炼 DashScope sk-... API Key',
+  },
+  zhipu: {
+    id: 'zhipu',
+    name: '智谱清言 GLM',
+    badge: '含免费Flash',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    defaultLlmModel: 'glm-4-flash',
+    suggestedModels: ['glm-4-flash', 'glm-4-plus'],
+    supportsCloudAsr: false,
+    keyHint: 'glm-4-flash 官方免费高速调用，适合大批次脚本裂变',
+  },
+  doubao: {
+    id: 'doubao',
+    name: '字节火山方舟 (豆包)',
+    badge: '抖音同源',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    defaultLlmModel: 'doubao-1-5-pro-32k-250115',
+    suggestedModels: ['doubao-1-5-pro-32k-250115'],
+    supportsCloudAsr: false,
+    keyHint: '填入火山方舟 API Key 及推理接入点 ep-... 或模型名',
+  },
+  ollama_local: {
+    id: 'ollama_local',
+    name: '本地 Ollama 离线大模型',
+    badge: '完全免Key',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    defaultLlmModel: 'qwen2.5:7b',
+    suggestedModels: ['qwen2.5:7b', 'deepseek-r1:7b', 'llama3.1:8b'],
+    supportsCloudAsr: false,
+    keyHint: '本机启动 ollama serve 后无需 API Key 即可离线生成脚本',
+  },
+  openai_custom: {
+    id: 'openai_custom',
+    name: 'OpenAI / 通用中转接口',
+    badge: '自定义兼容',
+    baseUrl: 'https://api.openai.com/v1',
+    defaultLlmModel: 'gpt-4o-mini',
+    suggestedModels: ['gpt-4o-mini', 'gpt-4o'],
+    supportsCloudAsr: true,
+    defaultAsrModel: 'whisper-1',
+    keyHint: '兼容任意支持 /v1/chat/completions 与 /v1/audio/transcriptions 的接口',
+  },
+};
+
+export type AsrEngineMode = 'auto' | 'cloud' | 'local_wasm';
+
+export type LocalWhisperModelId = 'Xenova/whisper-base' | 'Xenova/whisper-small';
+
+export interface AiEngineSettings {
+  providerId: AiProviderId;
+  baseUrl: string;
+  apiKey: string;
+  llmModel: string;
+  asrMode: AsrEngineMode;
+  /** Defaults to https://api.siliconflow.cn/v1 so 1 SiliconFlow key unlocks free SenseVoiceSmall */
+  asrBaseUrl: string;
+  /** Optional dedicated ASR key; if empty, automatically reuses `apiKey`! */
+  asrApiKey: string;
+  asrModel: string;
+  localWhisperModel: LocalWhisperModelId;
+}
+
+export function createDefaultAiSettings(): AiEngineSettings {
+  return {
+    providerId: 'siliconflow',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    apiKey: '',
+    llmModel: 'Qwen/Qwen2.5-7B-Instruct',
+    asrMode: 'auto',
+    asrBaseUrl: 'https://api.siliconflow.cn/v1',
+    asrApiKey: '',
+    asrModel: 'FunAudioLLM/SenseVoiceSmall',
+    localWhisperModel: 'Xenova/whisper-base',
+  };
+}
+
+export type AiScriptStyleId =
+  | 'mixed_horse_race'
+  | 'pain_point_hook'
+  | 'hardcore_test'
+  | 'anti_pitfall'
+  | 'promo_urgency'
+  | 'local_store';
+
+export const AI_SCRIPT_STYLES: Record<
+  AiScriptStyleId,
+  { label: string; badge: string; desc: string }
+> = {
+  mixed_horse_race: {
+    label: '全流派混合赛马',
+    badge: '千川首选',
+    desc: '痛点型+测评型+避坑型+逼单型多维度交叉生成，测试最优跑量方向',
+  },
+  pain_point_hook: {
+    label: '痛点直击种草',
+    badge: '高留存',
+    desc: '前3秒精准戳中人群日常痛点，顺势引出产品解决方案',
+  },
+  hardcore_test: {
+    label: '硬核参数实测',
+    badge: '强信任',
+    desc: '聚焦暴力实测、核心用料与前后对比，快速打消下单顾虑',
+  },
+  anti_pitfall: {
+    label: '反向避坑揭秘',
+    badge: '高完播',
+    desc: '“别再交智商税了！”悬念反常识切入，拉满前3秒完播率',
+  },
+  promo_urgency: {
+    label: '源头福利逼单',
+    badge: '高ROI转化',
+    desc: '突出源头直发、价格锚点对比与限时赠品福利，强力促单',
+  },
+  local_store: {
+    label: '同城团购探店',
+    badge: '本地生活',
+    desc: '适合餐饮美食、休闲娱乐、同城门店团购套餐引流到店',
+  },
+};
+
+export interface AiScriptGenerateRequest {
+  productName: string;
+  sellingPoints: string;
+  painPoints?: string;
+  ctaOffer?: string;
+  styleId: AiScriptStyleId;
+  count: number; // 3 ~ 16
+  targetDurationSec: 12 | 20 | 32;
+  useOfflineFormulaOnly?: boolean;
+}
+
+export interface GeneratedAdScriptItem {
+  id: string;
+  angleBadge: string;
+  topTitle: string;
+  bottomTitle: string;
+  spokenScript: string;
+  estDurationSec: number;
+}
+
+export interface SpeechSegmentPayload {
+  index: number;
+  startSec: number;
+  endSec: number;
+  /** Base64-encoded Float32LE 16kHz mono PCM samples */
+  pcmFloat32Base64: string;
+}
+

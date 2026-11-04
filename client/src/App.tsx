@@ -32,16 +32,20 @@ import {
   createNewProject,
   deleteAssetApi,
   deleteProjectApi,
+  fetchAiSettingsApi,
   fetchBootstrap,
   fetchHardwareReportApi,
   generateMatrixGroupsApi,
   importProjectJson,
   loadProjectById,
+  prepareLocalAsrSegmentsApi,
   ProjectSummary,
   removeAudioBreathApi,
+  runCloudAsrForGroupApi,
   saveProjectApi,
   uploadAssetsWithProgress,
 } from './api';
+import { runLocalWhisperInWorker } from './utils/localWhisperAsr';
 import { TopHeader, WorkspaceLayout } from './components/TopHeader';
 import { AssetLibraryPanel } from './components/AssetLibraryPanel';
 import { MonitorMode, PlayerMonitor } from './components/PlayerMonitor';
@@ -50,7 +54,7 @@ import { VideoGroupsBoard } from './components/VideoGroupsBoard';
 import { MatrixMixerView } from './components/MatrixMixerView';
 import { TrimCropModal, TrimCropResult } from './components/TrimCropModal';
 import { BatchExportModal } from './components/BatchExportModal';
-import { TtsStudioModal } from './components/TtsStudioModal';
+import { AiStudioInitialTab, TtsStudioModal } from './components/TtsStudioModal';
 import { AudioEditorModal, NonDestructiveAudioSave } from './components/AudioEditorModal';
 import { uid } from './utils/format';
 
@@ -107,8 +111,14 @@ export const App: React.FC = () => {
   }>({ open: false });
   const [ttsModalState, setTtsModalState] = useState<{
     open: boolean;
+    initialTab?: AiStudioInitialTab;
     defaultAssignMode?: 'library_only' | 'active_group' | 'dispatch_groups' | 'matrix_pool';
   }>({ open: false });
+  const [asrState, setAsrState] = useState<{
+    running: boolean;
+    text: string;
+    pct: number;
+  } | null>(null);
   const [audioEditorAsset, setAudioEditorAsset] = useState<MediaAsset | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
@@ -803,9 +813,104 @@ export const App: React.FC = () => {
         showToast('🎵 已将本组口播配音与背景音乐混音配置同步至全部视频组');
       }}
       onOpenAudioEditor={(asset) => setAudioEditorAsset(asset)}
-      onOpenTtsStudio={() =>
-        setTtsModalState({ open: true, defaultAssignMode: 'active_group' })
+      onOpenTtsStudio={(tab) =>
+        setTtsModalState({
+          open: true,
+          initialTab: tab || 'ai_script',
+          defaultAssignMode: 'active_group',
+        })
       }
+      asrState={asrState}
+      onRunGroupAsr={(groupId, mode, sourceTrack) => {
+        void (async () => {
+          if (!project) return;
+          try {
+            if (mode === 'cloud') {
+              setAsrState({
+                running: true,
+                text: '正在提取 16kHz 开口人声并请求云端 ASR...',
+                pct: 35,
+              });
+              const res = await runCloudAsrForGroupApi(project, groupId, sourceTrack);
+              updateProject((d) => {
+                const g = d.videoGroups.find((x) => x.id === groupId);
+                if (g) {
+                  g.subtitles = {
+                    enabled: true,
+                    styleId: g.subtitles?.styleId || 'douyin_yellow',
+                    yPercent: g.subtitles?.yPercent || 74,
+                    fontScale: g.subtitles?.fontScale || 1.0,
+                    cues: res.cues,
+                  };
+                }
+                return d;
+              });
+              setMonitorMode('program');
+              showToast(
+                `🎙️ 云端识别完成：共检测 ${res.segmentCount} 段开口语音，生成 ${res.cues.length} 句精准时间轴字幕！`
+              );
+            } else {
+              setAsrState({
+                running: true,
+                text: '正在准备 16kHz 音频切片与本地离线引擎...',
+                pct: 12,
+              });
+              const [cfg, prep] = await Promise.all([
+                fetchAiSettingsApi().catch(() => null),
+                prepareLocalAsrSegmentsApi(project, groupId, sourceTrack),
+              ]);
+              const modelId = cfg?.localWhisperModel || 'Xenova/whisper-base';
+
+              const cues = await runLocalWhisperInWorker(
+                prep.segments,
+                modelId,
+                (text, pct) => setAsrState({ running: true, text, pct })
+              );
+
+              if (cues.length === 0) {
+                alert('识别完成，但未在人声段中提取到清晰的中文口播字词。');
+                return;
+              }
+
+              updateProject((d) => {
+                const g = d.videoGroups.find((x) => x.id === groupId);
+                if (g) {
+                  g.subtitles = {
+                    enabled: true,
+                    styleId: g.subtitles?.styleId || 'douyin_yellow',
+                    yPercent: g.subtitles?.yPercent || 74,
+                    fontScale: g.subtitles?.fontScale || 1.0,
+                    cues,
+                  };
+                }
+                return d;
+              });
+              setMonitorMode('program');
+              showToast(
+                `💻 本地免Key离线识别完成：生成 ${cues.length} 句精准对轴动态字幕！`
+              );
+            }
+          } catch (err: any) {
+            const msg = String(err?.message || '语音识别失败');
+            if (mode === 'cloud' && msg.includes('API Key')) {
+              const openCfg = window.confirm(
+                `${msg}\n\n点击【确定】打开 AI 引擎配置面板填入免费硅基流动 Key，或点击【取消】改用旁边的「本地免Key识别」。`
+              );
+              if (openCfg) {
+                setTtsModalState({
+                  open: true,
+                  initialTab: 'settings',
+                  defaultAssignMode: 'active_group',
+                });
+              }
+            } else {
+              alert(msg);
+            }
+          } finally {
+            setAsrState(null);
+          }
+        })();
+      }}
     />
   );
 
@@ -1133,7 +1238,11 @@ export const App: React.FC = () => {
               setMonitorMode('source');
             }}
             onOpenTtsStudio={() =>
-              setTtsModalState({ open: true, defaultAssignMode: 'matrix_pool' })
+              setTtsModalState({
+                open: true,
+                initialTab: 'ai_script',
+                defaultAssignMode: 'matrix_pool',
+              })
             }
           />
         )}
@@ -1244,7 +1353,11 @@ export const App: React.FC = () => {
           }
         }}
         onOpenTtsStudio={() =>
-          setTtsModalState({ open: true, defaultAssignMode: 'active_group' })
+          setTtsModalState({
+            open: true,
+            initialTab: 'ai_script',
+            defaultAssignMode: 'active_group',
+          })
         }
         onOpenBatchExport={() => setExportModalState({ open: true })}
       />
@@ -1358,11 +1471,12 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* AI Neural Text-to-Speech & Post-TTS Smart Breath Removal Modal */}
+      {/* Unified AI Script Fission + Neural TTS & Breath Removal Studio Modal */}
       {ttsModalState.open && (
         <TtsStudioModal
           project={project}
           activeGroup={activeGroup}
+          initialTab={ttsModalState.initialTab}
           defaultAssignMode={ttsModalState.defaultAssignMode}
           onClose={() => setTtsModalState({ open: false })}
           onProjectUpdated={(updatedProject, createdAssets, toastMsg) => {

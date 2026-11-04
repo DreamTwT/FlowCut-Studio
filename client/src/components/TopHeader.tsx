@@ -501,11 +501,11 @@ export const TopHeader: React.FC<Props> = ({
 
         <button
           onClick={onOpenTtsStudio}
-          className="px-2.5 py-1.5 rounded-lg bg-[#201D33] hover:bg-[#2B2645] border border-purple-400/40 text-purple-200 font-bold text-xs whitespace-nowrap transition flex items-center gap-1.5"
-          title="文字转口播语音并自动去气口"
+          className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#231E3B] to-[#1A2639] hover:brightness-115 border border-[#00E5FF]/45 text-white font-bold text-xs whitespace-nowrap transition flex items-center gap-1.5 shadow-[0_0_12px_rgba(124,58,237,0.2)]"
+          title="打开 AI 爆款脚本裂变 & 神经语音配音中心"
         >
-          <Mic className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
-          文字转配音
+          <Sparkles className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
+          AI 脚本与配音
         </button>
 
         <button

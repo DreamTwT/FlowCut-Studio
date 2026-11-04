@@ -31,6 +31,8 @@ export const THUMBS_DIR = path.join(STORAGE_DIR, 'thumbnails');
 export const EXPORTS_DIR = path.join(STORAGE_DIR, 'exports');
 export const PROJECTS_DIR = path.join(STORAGE_DIR, 'projects');
 export const TEMP_DIR = path.join(STORAGE_DIR, 'temp');
+export const MODELS_DIR = path.join(STORAGE_DIR, 'models');
+export const AI_CONFIG_FILE = path.join(STORAGE_DIR, '_ai_config.json');
 
 export function ensureStorageDirs() {
   for (const dir of [
@@ -41,6 +43,7 @@ export function ensureStorageDirs() {
     EXPORTS_DIR,
     PROJECTS_DIR,
     TEMP_DIR,
+    MODELS_DIR,
   ]) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });

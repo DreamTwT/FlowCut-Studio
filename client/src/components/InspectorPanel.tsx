@@ -1,9 +1,13 @@
 import React, { useRef, useState } from 'react';
 import {
+  CloudLightning,
   CopyCheck,
+  Cpu,
   Download,
   FlipHorizontal2,
   Image as ImageIcon,
+  KeyRound,
+  Loader2,
   MessageSquareText,
   Mic,
   Music,
@@ -78,7 +82,13 @@ interface Props {
   ) => void;
   onSyncAudioAllGroups: (source: VideoGroup) => void;
   onOpenAudioEditor: (asset: MediaAsset) => void;
-  onOpenTtsStudio: () => void;
+  onOpenTtsStudio: (initialTab?: 'ai_script' | 'tts' | 'settings') => void;
+  asrState?: { running: boolean; text: string; pct: number } | null;
+  onRunGroupAsr?: (
+    groupId: string,
+    mode: 'cloud' | 'local_wasm',
+    sourceTrack: 'auto' | 'voiceover' | 'video_clips'
+  ) => void;
 }
 
 export const InspectorPanel: React.FC<Props> = ({
@@ -103,10 +113,15 @@ export const InspectorPanel: React.FC<Props> = ({
   onSyncAudioAllGroups,
   onOpenAudioEditor,
   onOpenTtsStudio,
+  asrState = null,
+  onRunGroupAsr,
 }) => {
   const [tab, setTab] = useState<'clip' | 'overlay' | 'audio' | 'brand_dedup'>('overlay');
   const [textSubTab, setTextSubTab] = useState<'subtitles' | 'stickers'>('subtitles');
   const [customSubScript, setCustomSubScript] = useState('');
+  const [asrSourceTrack, setAsrSourceTrack] = useState<'auto' | 'voiceover' | 'video_clips'>(
+    'auto'
+  );
   const [protectTextNoMirror, setProtectTextNoMirror] = useState(true);
   const [batchDedupPreset, setBatchDedupPreset] =
     useState<Exclude<DedupPresetId, 'custom'>>('standard');
@@ -429,12 +444,97 @@ export const InspectorPanel: React.FC<Props> = ({
                       </button>
                     ) : (
                       <button
-                        onClick={onOpenTtsStudio}
+                        onClick={() => onOpenTtsStudio('ai_script')}
                         className="w-full py-1.5 px-2.5 rounded-lg bg-[#241E38] hover:bg-[#31294D] border border-purple-400/40 text-purple-200 font-semibold text-[11px] flex items-center justify-center gap-1.5 transition whitespace-nowrap"
                       >
-                        <Mic className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
-                        文字生成配音并自动挂上同步字幕
+                        <Sparkles className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
+                        AI 脚本裂变 / 配音并自动挂同步字幕
                       </button>
+                    )}
+
+                    {/* Dual-Mode Real Speech-to-Subtitle (ASR + 16kHz VAD Alignment) */}
+                    {onRunGroupAsr && (
+                      <div className="p-2 rounded-lg bg-[#11141E] border border-[#2A334D] space-y-2">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-bold text-[#00E5FF] flex items-center gap-1">
+                            <Mic className="w-3 h-3 shrink-0" />
+                            原声语音识别转字幕 (16kHz 开口对轴)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onOpenTtsStudio('settings')}
+                            title="配置硅基流动免费 SenseVoice / Whisper API Key 或离线模型规格"
+                            className="p-1 rounded hover:bg-[#232A3E] text-[#9CA3AF] hover:text-[#00E5FF] transition"
+                          >
+                            <KeyRound className="w-3 h-3" />
+                          </button>
+                        </div>
+
+                        <CustomSelect<'auto' | 'voiceover' | 'video_clips'>
+                          size="sm"
+                          value={asrSourceTrack}
+                          options={[
+                            {
+                              value: 'auto',
+                              label: '智能音轨 (有配音识配音，无配音识原片)',
+                            },
+                            {
+                              value: 'video_clips',
+                              label: '仅识别本组视频片段真人原声',
+                            },
+                            {
+                              value: 'voiceover',
+                              label: '仅识别本组外录/挂载口播配音轨',
+                            },
+                          ]}
+                          onChange={(v) => setAsrSourceTrack(v)}
+                          menuMinWidth={240}
+                          className="w-full"
+                        />
+
+                        {asrState?.running ? (
+                          <div className="space-y-1.5 py-0.5">
+                            <div className="flex items-center justify-between text-[10px] text-[#00E5FF]">
+                              <span className="flex items-center gap-1 truncate">
+                                <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                                <span className="truncate">{asrState.text}</span>
+                              </span>
+                              <span className="font-mono shrink-0">{asrState.pct}%</span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-[#1C2132] overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-[#00E5FF] to-[#10B981] transition-all duration-300"
+                                style={{ width: `${Math.max(5, asrState.pct)}%` }}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onRunGroupAsr(activeGroup.id, 'cloud', asrSourceTrack)
+                              }
+                              title="调用云端 SenseVoiceSmall / Whisper 极速识别（硅基流动免费额度1秒出字）"
+                              className="h-8 px-2 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF] border border-[#00E5FF]/40 text-[#00E5FF] hover:text-[#071016] font-bold text-[11px] whitespace-nowrap flex items-center justify-center gap-1 transition"
+                            >
+                              <CloudLightning className="w-3 h-3 shrink-0" />
+                              云端极速识别
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onRunGroupAsr(activeGroup.id, 'local_wasm', asrSourceTrack)
+                              }
+                              title="使用本机 WebAssembly 离线 Whisper 模型识别（完全免API Key，首次使用自动缓存模型）"
+                              className="h-8 px-2 rounded-lg bg-[#22283C] hover:bg-[#FFB800] border border-[#343D58] text-[#E2E8F0] hover:text-[#111318] font-bold text-[11px] whitespace-nowrap flex items-center justify-center gap-1 transition"
+                            >
+                              <Cpu className="w-3 h-3 shrink-0" />
+                              本地免Key识别
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
 
                     {/* Custom Script Paste -> Auto Split & Align */}
@@ -819,7 +919,7 @@ export const InspectorPanel: React.FC<Props> = ({
                     口播配音轨 (AI配音/人声)
                   </span>
                   <button
-                    onClick={onOpenTtsStudio}
+                    onClick={() => onOpenTtsStudio('tts')}
                     className="px-2 py-0.5 rounded bg-[#FFB800] text-[#111318] font-bold text-[10px] whitespace-nowrap hover:brightness-110 transition"
                   >
                     + 文字生成配音

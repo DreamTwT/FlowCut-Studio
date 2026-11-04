@@ -11,12 +11,14 @@ bin/
 # Standalone Single-File Preview Artifact
 双击直接打开-免环境体验版.html
 
-# User Runtime Media & Local Project Data (auto-created at runtime)
+# User Runtime Media, Local AI Keys & Offline Model Cache (auto-created at runtime)
 storage/uploads/*
 storage/exports/*
 storage/temp/*
 storage/thumbnails/*
 storage/projects/*
+storage/models/*
+storage/_ai_config.json
 !storage/.gitkeep
 
 # Logs & OS Metadata
