@@ -26,6 +26,7 @@ import {
   HardwareAccelerationReport,
   MediaAsset,
   ProjectData,
+  PictureInPictureConfig,
   SceneTag,
   SubtitleConfig,
   TimelineClip,
@@ -652,6 +653,16 @@ export const App: React.FC = () => {
       selectedClipAsset={selectedClip ? assetMap.get(selectedClip.assetId) || null : null}
       audioAssets={audioAssets}
       imageAssets={imageAssets}
+      visualAssets={project.assets.filter(a => a.type === 'image' || a.type === 'video')}
+      onUpdatePictureInPicture={(groupId, next: PictureInPictureConfig) => updateProject(d => {
+        const g = d.videoGroups.find(x => x.id === groupId);
+        if (g) g.pip = structuredClone(next);
+        return d;
+      })}
+      onSyncPictureInPictureAllGroups={(next: PictureInPictureConfig) => {
+        updateProject(d => { for (const g of d.videoGroups) g.pip = structuredClone(next); return d; });
+        showToast('✓ 已将画中画配置同步到全部视频组');
+      }}
       onUpdateClip={(groupId, clipId, patch) =>
         updateProject((d) => {
           const g = d.videoGroups.find((x) => x.id === groupId);

@@ -389,6 +389,49 @@ export interface GroupSfxConfig {
   ctaSfxId: SfxPresetId;
 }
 
+/** A single visual picture-in-picture layer, composited above video and below text/watermarks. */
+export interface PictureInPictureConfig {
+  enabled: boolean;
+  assetId: string | null;
+  xPercent: number; // 0..100 of available horizontal travel
+  yPercent: number; // 0..100 of available vertical travel
+  widthPercent: number; // width relative to output frame
+  opacity: number;
+  startSec: number; // pre-dedup timeline
+  endSec: number; // 0 means end of video
+  chromaEnabled: boolean;
+  chromaColor: string; // #RRGGBB
+  similarity: number; // 0.01..1
+  blend: number; // 0..1
+}
+
+export function createDefaultPictureInPicture(): PictureInPictureConfig {
+  return { enabled: false, assetId: null, xPercent: 95, yPercent: 95,
+    widthPercent: 30, opacity: 1, startSec: 0, endSec: 0,
+    chromaEnabled: false, chromaColor: '#00ff00', similarity: 0.15, blend: 0.08 };
+}
+
+/** Clamp untrusted/imported project settings before using them in preview or FFmpeg expressions. */
+export function normalizePictureInPicture(value?: Partial<PictureInPictureConfig>): PictureInPictureConfig {
+  const defaults = createDefaultPictureInPicture();
+  const clamp = (n: unknown, min: number, max: number, fallback: number) =>
+    typeof n === 'number' && Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+  return {
+    enabled: value?.enabled === true,
+    assetId: typeof value?.assetId === 'string' && value.assetId ? value.assetId : null,
+    xPercent: clamp(value?.xPercent, 0, 100, defaults.xPercent),
+    yPercent: clamp(value?.yPercent, 0, 100, defaults.yPercent),
+    widthPercent: clamp(value?.widthPercent, 5, 100, defaults.widthPercent),
+    opacity: clamp(value?.opacity, 0, 1, defaults.opacity),
+    startSec: clamp(value?.startSec, 0, 86400, defaults.startSec),
+    endSec: clamp(value?.endSec, 0, 86400, defaults.endSec),
+    chromaEnabled: value?.chromaEnabled === true,
+    chromaColor: typeof value?.chromaColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(value.chromaColor) ? value.chromaColor.toLowerCase() : defaults.chromaColor,
+    similarity: clamp(value?.similarity, 0.01, 1, defaults.similarity),
+    blend: clamp(value?.blend, 0, 1, defaults.blend),
+  };
+}
+
 export interface VideoGroup {
   id: string;
   name: string;
@@ -399,6 +442,7 @@ export interface VideoGroup {
   watermark?: WatermarkConfig;
   dedup?: DedupConfig;
   sfx?: GroupSfxConfig;
+  pip?: PictureInPictureConfig;
 
   // BGM Music Track & Clip Controls
   bgmAssetId: string | null;

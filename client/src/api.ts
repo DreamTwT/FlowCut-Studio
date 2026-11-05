@@ -254,6 +254,7 @@ export async function deleteAssetApi(projectId: string, assetId: string): Promis
     for (const g of proj.videoGroups) {
       g.clips = g.clips.filter((c) => c.assetId !== assetId);
       if (g.bgmAssetId === assetId) g.bgmAssetId = null;
+      if (g.pip?.assetId === assetId) g.pip.assetId = null;
     }
     for (const s of proj.matrix.slots) {
       s.assetIds = s.assetIds.filter((id) => id !== assetId);
@@ -331,8 +332,8 @@ export async function startBatchRenderApi(
       options.groupIds?.length ? options.groupIds.includes(g.id) : g.selectedForExport
     );
     if ((options.exportCoverMode || project.exportCoverMode || 'none') !== 'none' ||
-        targetGroups.some((g) => g.sfx?.enabled || g.clips.some((c) => c.motion && c.motion !== 'none'))) {
-      throw new Error('浏览器独立预览模式暂不支持运镜、音效或封面导出；请启动桌面版或本地服务后导出。');
+        targetGroups.some((g) => g.pip?.enabled || g.sfx?.enabled || g.clips.some((c) => c.motion && c.motion !== 'none'))) {
+      throw new Error('浏览器独立预览模式暂不支持画中画、运镜、音效或封面导出；请启动桌面版或本地服务后导出。');
     }
     return startLocalBatchRender(project, options);
   }

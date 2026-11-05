@@ -767,6 +767,10 @@ export function generateMatrixGroupsLocal(
     (id) => assetMap.get(id)?.type === 'audio'
   );
   const templateWatermark = project.videoGroups.find((g) => g.watermark?.enabled)?.watermark;
+  const templatePip = project.videoGroups.find((g) => {
+    const asset = g.pip?.assetId ? assetMap.get(g.pip.assetId) : undefined;
+    return g.pip?.enabled && (asset?.type === 'image' || asset?.type === 'video');
+  })?.pip;
   const topPool = matrix.topTitlePool.map((t) => t.trim()).filter(Boolean);
   const bottomPool = matrix.bottomTitlePool.map((t) => t.trim()).filter(Boolean);
   const startIdx = matrix.appendMode === 'replace' ? 1 : project.videoGroups.length + 1;
@@ -814,6 +818,7 @@ export function generateMatrixGroupsLocal(
       },
       subtitles: autoSubtitles,
       watermark: templateWatermark ? structuredClone(templateWatermark) : undefined,
+      pip: templatePip ? structuredClone(templatePip) : undefined,
       dedup: matrix.autoDedup
         ? generateDedupVariant(
             idx,

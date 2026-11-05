@@ -21,6 +21,7 @@ import {
   VideoGroup,
 } from '@shared/schema';
 import { SequenceClipLayer } from './SequenceClipLayer';
+import { PictureInPicturePreview } from './PictureInPicturePreview';
 import { buildTransitionTimeline, buildTimelineSfxEvents, activeTimelineIndex, getMasterSpeedFactor } from '@shared/previewTimeline';
 import { getPreviewLayers } from '../utils/transitionPreview';
 import { OverlayPreviewLayer } from './OverlayPreviewLayer';
@@ -501,6 +502,14 @@ export const PlayerMonitor: React.FC<Props> = ({
                   />
                 )}
               </div>
+
+              {activeGroup?.pip?.enabled && activeGroup.pip.assetId && (() => {
+                const pipAsset = assetMap.get(activeGroup.pip!.assetId!);
+                return pipAsset && (pipAsset.type === 'image' || pipAsset.type === 'video') ?
+                  <PictureInPicturePreview asset={pipAsset} config={activeGroup.pip!}
+                    frameWidth={Math.round(fittedW)} frameHeight={Math.round(fittedH)}
+                    time={globalProgramTime} playing={isPlaying} masterSpeedFactor={masterSpeedFactor} /> : null;
+              })()}
 
               {/* Live CapCut Fancy Titles + Synced Subtitles + Brand Watermark + Safe Zone */}
               <OverlayPreviewLayer

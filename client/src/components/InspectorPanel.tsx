@@ -50,6 +50,7 @@ import {
   MOTION_PRESET_LABELS,
   MotionMatrixStrategy,
   MotionPresetId,
+  PictureInPictureConfig,
   SFX_PRESETS,
   SfxPresetId,
   SUBTITLE_STYLES,
@@ -67,6 +68,7 @@ import {
 import { formatShortSec, uid } from '../utils/format';
 import { playBuiltinSfxPreview } from '../utils/motionAndSfx';
 import { CustomSelect } from './CustomSelect';
+import { PictureInPicturePanel } from './PictureInPicturePanel';
 
 interface Props {
   activeGroup: VideoGroup | null;
@@ -74,6 +76,9 @@ interface Props {
   selectedClipAsset: MediaAsset | null;
   audioAssets: MediaAsset[];
   imageAssets: MediaAsset[];
+  visualAssets: MediaAsset[];
+  onUpdatePictureInPicture: (groupId: string, next: PictureInPictureConfig) => void;
+  onSyncPictureInPictureAllGroups: (value: PictureInPictureConfig) => void;
   onUpdateClip: (groupId: string, clipId: string, patch: Partial<TimelineClip>) => void;
   onApplyTransitionToGroup: (groupId: string, transition: TransitionType) => void;
   onOpenTrimClip: (group: VideoGroup, clip: TimelineClip) => void;
@@ -124,6 +129,9 @@ export const InspectorPanel: React.FC<Props> = ({
   selectedClipAsset,
   audioAssets,
   imageAssets,
+  visualAssets,
+  onUpdatePictureInPicture,
+  onSyncPictureInPictureAllGroups,
   onUpdateClip,
   onApplyTransitionToGroup,
   onOpenTrimClip,
@@ -1718,6 +1726,9 @@ export const InspectorPanel: React.FC<Props> = ({
 
           return (
             <div className="space-y-3.5">
+              <PictureInPicturePanel value={activeGroup.pip} assets={visualAssets}
+                onChange={next => onUpdatePictureInPicture(activeGroup.id, next)}
+                onSync={onSyncPictureInPictureAllGroups} />
               {/* 1. Brand Corner Watermark / Logo */}
               <div className="p-3 rounded-xl bg-[#181B25] border border-[#2C334A] space-y-2.5">
                 <div className="flex items-center justify-between gap-2">

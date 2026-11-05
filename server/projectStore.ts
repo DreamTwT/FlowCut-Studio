@@ -252,6 +252,7 @@ export function deleteAssetFromProject(project: ProjectData, assetId: string): P
     if (g.watermark?.imageAssetId === assetId) {
       g.watermark.imageAssetId = null;
     }
+    if (g.pip?.assetId === assetId) g.pip.assetId = null;
   }
   for (const s of project.matrix.slots) {
     s.assetIds = s.assetIds.filter((id) => id !== assetId);
@@ -407,6 +408,10 @@ export function generateGroupsFromMatrix(
 
   const startIndex = matrix.appendMode === 'replace' ? 1 : project.videoGroups.length + 1;
   const templateWm = project.videoGroups.find((g) => g.watermark?.enabled)?.watermark;
+  const templatePip = project.videoGroups.find((g) => {
+    const asset = g.pip?.assetId ? assetMap.get(g.pip.assetId) : undefined;
+    return g.pip?.enabled && (asset?.type === 'image' || asset?.type === 'video');
+  })?.pip;
 
   const newGroups: VideoGroup[] = selectedCombos.map((comboAssetIds, idx) => {
     const seqNum = String(startIndex + idx).padStart(2, '0');
@@ -458,6 +463,7 @@ export function generateGroupsFromMatrix(
             }
           : undefined,
       watermark: templateWm ? structuredClone(templateWm) : undefined,
+      pip: templatePip ? structuredClone(templatePip) : undefined,
       dedup: matrix.autoDedup
         ? generateDedupVariant(
             idx,

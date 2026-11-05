@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { EXPORTS_DIR, FFMPEG_BIN, refreshMediaBinaries, UPLOADS_DIR } from './paths.js';
 import { ensureBuiltinSfxReady, getSfxFilePath } from './sfxGenerator.js';
 import { buildTransitionTimeline, buildTimelineSfxEvents, getMasterSpeedFactor } from '../shared/previewTimeline.js';
+import { getPictureInPictureRect } from '../shared/pictureInPicture.js';
 import {
   buildVideoEncoderArgs,
   resolveEncoderForRender,
@@ -26,6 +27,7 @@ import {
   isCustomCropped,
   MediaAsset,
   MotionPresetId,
+  normalizePictureInPicture,
   ProjectData,
   RenderBatchJob,
   RenderItemStatus,
@@ -502,6 +504,41 @@ async function renderSingleGroup(
     if (dedupChain.length > 0) {
       filterParts.push(`${currVideoPad}${dedupChain.join(',')}[vdedup]`);
       currVideoPad = '[vdedup]';
+    }
+  }
+
+  // Picture-in-picture is placed after underlying-video dedup and before text/subtitles.
+  const pip = normalizePictureInPicture(group.pip);
+  if (pip.enabled) {
+    const pipAsset = pip.assetId ? assetMap.get(pip.assetId) : undefined;
+    if (!pipAsset || (pipAsset.type !== 'image' && pipAsset.type !== 'video')) {
+      throw new Error('画中画已启用，请选择有效的视频或图片素材');
+    }
+    const pipPath = path.join(UPLOADS_DIR, pipAsset.filename);
+    if (!fs.existsSync(pipPath)) throw new Error('画中画素材文件不存在，请重新导入');
+    if (pip.endSec > 0 && pip.endSec <= pip.startSec) throw new Error('画中画结束时间必须晚于开始时间');
+    const start = Math.min(totalDur, pip.startSec);
+    const end = pip.endSec > 0 ? Math.min(totalDur, pip.endSec) : totalDur;
+    if (start < end && pip.opacity > 0) {
+      const rect = getPictureInPictureRect(pip, W, H, pipAsset.width, pipAsset.height);
+      const pipW = Math.max(2, Math.min(W, Math.floor(rect.width / 2) * 2));
+      const pipH = Math.max(2, Math.min(H, Math.floor(rect.height / 2) * 2));
+      const x = Math.round((W - pipW) * pip.xPercent / 100);
+      const y = Math.round((H - pipH) * pip.yPercent / 100);
+      const activeDur = Math.max(0.02, end - start);
+      if (pipAsset.type === 'image') {
+        inputArgs.push('-loop', '1', '-framerate', String(fps), '-t', activeDur.toFixed(3), '-i', pipPath);
+      } else {
+        inputArgs.push('-stream_loop', '-1', '-t', activeDur.toFixed(3), '-i', pipPath);
+      }
+      const keyFilter = pip.chromaEnabled
+        ? `,colorkey=0x${pip.chromaColor.slice(1)}:${pip.similarity.toFixed(4)}:${pip.blend.toFixed(4)}` : '';
+      filterParts.push(
+        `[${nextInputIdx}:v]setpts=PTS-STARTPTS+${start.toFixed(3)}/TB,scale=${pipW}:${pipH}:flags=bicubic,format=rgba${keyFilter},colorchannelmixer=aa=${pip.opacity.toFixed(4)}[vpip]`,
+        `${currVideoPad}[vpip]overlay=${x}:${y}:format=auto:eof_action=pass:repeatlast=0:enable='gte(t,${start.toFixed(3)})*lt(t,${end.toFixed(3)})'[vpipout]`
+      );
+      currVideoPad = '[vpipout]';
+      nextInputIdx++;
     }
   }
 

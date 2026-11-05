@@ -1,10 +1,10 @@
 {
   "name": "flowcut-studio",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
-  "description": "FlowCut Pro v2.5.0 - Transition Preview and Shared Render Timeline",
+  "description": "FlowCut Pro v2.6.0 - Picture-in-Picture and Chroma Key",
   "author": "FlowCut Studio",
   "config": {
     "electron_mirror": "https://cdn.npmmirror.com/binaries/electron/",
@@ -12,9 +12,9 @@
   },
   "scripts": {
     "dev": "tsx server/index.ts",
-    "test": "node --import tsx --test tests/v24.unit.test.ts tests/v24.preview.test.tsx tests/v25.timeline.test.ts",
-    "test:browser": "node --import tsx --test tests/v25.browser.test.ts",
-    "test:integration": "node --import tsx --test tests/v24.integration.test.ts",
+    "test": "node --import tsx --test tests/v24.unit.test.ts tests/v24.preview.test.tsx tests/v25.timeline.test.ts tests/v26.unit.test.ts",
+    "test:browser": "node --import tsx --test --test-concurrency=1 tests/v25.browser.test.ts tests/v26.browser.test.ts",
+    "test:integration": "node --import tsx --test --test-concurrency=1 tests/v24.integration.test.ts tests/v26.integration.test.ts",
     "build:client": "vite build",
     "build:server": "esbuild server/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=runtime/server.cjs --external:vite --external:sharp --external:ffmpeg-static --external:ffprobe-static --external:bufferutil --external:utf-8-validate",
     "build": "npm run build:client && npm run build:server",
