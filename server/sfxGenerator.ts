@@ -183,6 +183,10 @@ function synthesizePresetSamples(
   return { left, right };
 }
 
+export function isBuiltinSfxId(id: string): id is Exclude<SfxPresetId, 'none'> {
+  return Object.prototype.hasOwnProperty.call(SFX_PRESETS, id);
+}
+
 export function getSfxFilePath(id: Exclude<SfxPresetId, 'none'>): string {
   return path.join(SFX_DIR, `${id}.wav`);
 }

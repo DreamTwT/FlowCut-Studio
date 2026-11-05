@@ -53,7 +53,7 @@ function playFallbackWebAudioSfx(sfxId: Exclude<SfxPresetId, 'none'>, volume: nu
     osc.connect(gain);
     gain.connect(webAudioCtx.destination);
 
-    const vol = Math.min(1, Math.max(0.05, volume)) * 0.35;
+    const vol = Math.min(1, Math.max(0, volume)) * 0.35;
     if (sfxId === 'ding_shine' || sfxId === 'cash_register') {
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(sfxId === 'cash_register' ? 1318 : 1568, now);
@@ -97,8 +97,8 @@ function playFallbackWebAudioSfx(sfxId: Exclude<SfxPresetId, 'none'>, volume: nu
  * and real-time `PlayerMonitor` timeline playback).
  */
 export function playBuiltinSfxPreview(sfxId: SfxPresetId | undefined, volume = 0.7) {
-  if (!sfxId || sfxId === 'none') return;
-  const clampedVol = Math.min(1, Math.max(0.02, volume));
+  if (!sfxId || sfxId === 'none' || !Number.isFinite(volume) || volume <= 0) return;
+  const clampedVol = Math.min(1, volume);
 
   if (isStandaloneBrowserMode) {
     playFallbackWebAudioSfx(sfxId, clampedVol);

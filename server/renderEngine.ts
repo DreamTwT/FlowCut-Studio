@@ -6,7 +6,7 @@ import archiver from 'archiver';
 import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { EXPORTS_DIR, FFMPEG_BIN, refreshMediaBinaries, UPLOADS_DIR } from './paths.js';
-import { ensureBuiltinSfxReady, getSfxFilePath } from './sfxGenerator.js';
+import { ensureBuiltinSfxReady, getSfxFilePath, isBuiltinSfxId } from './sfxGenerator.js';
 import {
   buildVideoEncoderArgs,
   resolveEncoderForRender,
@@ -66,7 +66,7 @@ function buildClipMotionFilterSuffix(
   effDur: number
 ): string {
   if (!motion || motion === 'none') return '';
-  const D = Math.max(0.25, effDur).toFixed(3);
+  const D = Math.max(0.1, effDur).toFixed(3);
   const sW = Math.max(W + 4, Math.round((W * 1.16) / 2) * 2);
   const sH = Math.max(H + 4, Math.round((H * 1.16) / 2) * 2);
 
@@ -156,13 +156,21 @@ export function startBatchRender(project: ProjectData, opts: StartBatchOptions =
   const batchDir = path.join(EXPORTS_DIR, batchId);
   fs.mkdirSync(batchDir, { recursive: true });
 
+  // Enforce uniqueness even when the pattern omits {index}, and on case-insensitive filesystems.
+  const usedNames = new Set<string>();
   const items: RenderItemStatus[] = targetGroups.map((group, idx) => {
     const seqStr = String(idx + 1).padStart(2, '0');
     const rawName = pattern
       .replace('{project}', project.name || '信息流项目')
       .replace('{index}', seqStr)
       .replace('{group}', group.name || `成片${seqStr}`);
-    const outName = `${sanitizeFilename(rawName)}.mp4`;
+    const baseName = sanitizeFilename(rawName) || '成片';
+    let outName = `${baseName}.mp4`;
+    let suffix = 2;
+    while (usedNames.has(outName.toLocaleLowerCase('en-US'))) {
+      outName = `${baseName}_${suffix++}.mp4`;
+    }
+    usedNames.add(outName.toLocaleLowerCase('en-US'));
 
     return {
       jobItemId: uuidv4(),
@@ -751,7 +759,7 @@ async function renderSingleGroup(
     }
 
     const cappedEvents = rawEvents
-      .filter((ev) => Boolean(getSfxFilePath(ev.sfxId)))
+      .filter((ev) => isBuiltinSfxId(ev.sfxId))
       .slice(0, 16);
 
     if (cappedEvents.length > 0) {
@@ -1027,13 +1035,15 @@ async function renderSingleGroup(
 
   // Extract Synchronized High-Res Ad Cover (.jpg) when enabled
   if (batch.exportCoverMode && batch.exportCoverMode !== 'none') {
-    let seekSec = 0.35;
-    if (batch.exportCoverMode === 'first_highlight') {
-      seekSec = Math.min(0.35, Math.max(0, finalOutDur - 1 / fps));
-    } else if (batch.exportCoverMode === 'golden_3s') {
-      seekSec = Math.min(1.8, Math.max(0, finalOutDur - 1 / fps));
+    // `finalOutDur` is clamped to 0.2s, but a high-speed short clip may contain
+    // fewer video frames. Seek inside the actual video timeline, not past its end.
+    const videoDuration = Math.max(0, totalDur / masterSpeedFactor);
+    const lastSafeSeek = Math.max(0, Math.min(finalOutDur, videoDuration) - 1.5 / fps);
+    let seekSec = Math.min(0.35, lastSafeSeek);
+    if (batch.exportCoverMode === 'golden_3s') {
+      seekSec = Math.min(1.8, lastSafeSeek);
     } else if (batch.exportCoverMode === 'middle_frame') {
-      seekSec = Math.max(0.05, finalOutDur * 0.5);
+      seekSec = Math.min(videoDuration * 0.5, lastSafeSeek);
     }
 
     const baseOutName = item.outputFilename.replace(/\.mp4$/i, '');
@@ -1053,16 +1063,19 @@ async function renderSingleGroup(
         '2',
         coverPath,
       ]);
-      if (fs.existsSync(coverPath)) {
-        item.coverFilename = coverFilename;
-        item.coverUrl = `/storage/exports/${batch.batchId}/${encodeURIComponent(coverFilename)}`;
+      if (!fs.existsSync(coverPath) || fs.statSync(coverPath).size === 0) {
+        throw new Error('FFmpeg 未生成封面图片');
       }
+      if ((item.status as string) === 'cancelled') return;
+      item.coverFilename = coverFilename;
+      item.coverUrl = `/storage/exports/${batch.batchId}/${encodeURIComponent(coverFilename)}`;
     } catch (coverErr: any) {
       item.coverError = '封面提取失败，请检查 FFmpeg 日志';
       console.warn('[RenderEngine] Cover frame extraction warning:', coverErr?.message);
     }
   }
 
+  if ((item.status as string) === 'cancelled') return;
   item.status = 'done';
   item.progress = 100;
   item.outputUrl = `/storage/exports/${batch.batchId}/${encodeURIComponent(item.outputFilename)}`;

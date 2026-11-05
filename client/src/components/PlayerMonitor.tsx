@@ -73,6 +73,7 @@ export const PlayerMonitor: React.FC<Props> = ({
   const voAudioRef = useRef<HTMLAudioElement | null>(null);
   const srcMediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const stageHostRef = useRef<HTMLDivElement | null>(null);
+  const imageElapsedRef = useRef(0);
   const lastSfxKeyRef = useRef<string>('');
   const lastSingleCtaKeyRef = useRef<string>('');
   const [stageBounds, setStageBounds] = useState<{ w: number; h: number }>({ w: 360, h: 640 });
@@ -266,17 +267,17 @@ export const PlayerMonitor: React.FC<Props> = ({
     if (asset.type === 'image' && isPlaying) {
       let lastTs = performance.now();
       let rafId = 0;
-      let acc = progClipElapsed;
+      imageElapsedRef.current = progClipElapsed;
 
       const tick = (now: number) => {
         const dt = (now - lastTs) / 1000;
         lastTs = now;
-        acc += dt;
-        if (acc >= effDur) {
+        imageElapsedRef.current += dt;
+        if (imageElapsedRef.current >= effDur) {
           advanceToNextClip();
           return;
         }
-        setProgClipElapsed(acc);
+        setProgClipElapsed(imageElapsedRef.current);
         rafId = requestAnimationFrame(tick);
       };
       rafId = requestAnimationFrame(tick);
@@ -374,9 +375,15 @@ export const PlayerMonitor: React.FC<Props> = ({
         const within = Math.max(0, Math.min(d - 0.02, targetSec - acc));
         setProgClipIdx(i);
         setProgClipElapsed(within);
+        imageElapsedRef.current = within;
+        // Do not replay a cue when seeking into the middle of a clip; allow it on rewind.
+        const key = `${activeGroup?.id}_${i}`;
+        lastSfxKeyRef.current = within < 0.05 ? '' : key;
+        const ctaTime = Math.max(0.5, d - 1.4);
+        lastSingleCtaKeyRef.current = within < ctaTime ? '' : key;
         onSelectClip(playableClips[i].clip.id);
         const entry = playableClips[i];
-        if (entry.asset.type === 'video' && progVideoRef.current) {
+        if (i === progClipIdx && entry.asset.type === 'video' && progVideoRef.current) {
           const spd = entry.clip.speed || 1;
           progVideoRef.current.currentTime = (entry.clip.trimStart || 0) + within * spd;
         }
@@ -545,9 +552,14 @@ export const PlayerMonitor: React.FC<Props> = ({
                   {currentEntry.asset.name}
                 </span>
               </div>
-              <span className="font-mono text-[10px] text-[#6B7280] whitespace-nowrap shrink-0">
-                {aspectRatio}
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                {playableClips.some((entry, i) => i < playableClips.length - 1 && entry.clip.transition !== 'none') && (
+                  <span className="text-[10px] text-amber-300 whitespace-nowrap" title="预览按硬切播放；导出会应用转场重叠，成片时长及音效时间点可能不同。">
+                    预览硬切 · 转场以导出为准
+                  </span>
+                )}
+                <span className="font-mono text-[10px] text-[#6B7280] whitespace-nowrap">{aspectRatio}</span>
+              </div>
             </>
           ) : (
             <span className="text-[#6B7280]">未添加画面片段</span>
