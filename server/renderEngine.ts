@@ -1,10 +1,12 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execFile, ChildProcess } from 'child_process';
+import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import archiver from 'archiver';
 import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { EXPORTS_DIR, FFMPEG_BIN, refreshMediaBinaries, UPLOADS_DIR } from './paths.js';
+import { ensureBuiltinSfxReady, getSfxFilePath } from './sfxGenerator.js';
 import {
   buildVideoEncoderArgs,
   resolveEncoderForRender,
@@ -17,17 +19,22 @@ import {
 import { saveProject } from './projectStore.js';
 import {
   AspectRatio,
+  CoverExportMode,
   ExportQuality,
   getTargetDimensions,
   isCustomCropped,
   MediaAsset,
+  MotionPresetId,
   ProjectData,
   RenderBatchJob,
   RenderItemStatus,
   ResolvedVideoEncoderId,
+  SfxPresetId,
   VideoEncoderId,
   VideoGroup,
 } from '../shared/schema.js';
+
+const execFileAsync = promisify(execFile);
 
 const batches = new Map<string, RenderBatchJob>();
 const activeProcs = new Map<string, ChildProcess>();
@@ -46,6 +53,42 @@ function stableHashInt(seed: string): number {
     h = Math.imul(h, 16777619);
   }
   return Math.abs(h >>> 0);
+}
+
+/**
+ * Builds per-clip FFmpeg dynamic camera motion filter chain (runs after trim+setpts=PTS-STARTPTS
+ * so `t` progresses cleanly from 0 -> effDur, keeping output locked at even W x H).
+ */
+function buildClipMotionFilterSuffix(
+  motion: MotionPresetId | undefined,
+  W: number,
+  H: number,
+  effDur: number
+): string {
+  if (!motion || motion === 'none') return '';
+  const D = Math.max(0.25, effDur).toFixed(3);
+  const sW = Math.max(W + 4, Math.round((W * 1.16) / 2) * 2);
+  const sH = Math.max(H + 4, Math.round((H * 1.16) / 2) * 2);
+
+  switch (motion) {
+    case 'zoom_in':
+      return `,scale=w=trunc(${W}*(1+0.16*min(1\\,t/${D}))/2)*2:h=trunc(${H}*(1+0.16*min(1\\,t/${D}))/2)*2:eval=frame,crop=${W}:${H}:(iw-${W})/2:(ih-${H})/2`;
+    case 'zoom_out':
+      return `,scale=w=trunc(${W}*(1.16-0.16*min(1\\,t/${D}))/2)*2:h=trunc(${H}*(1.16-0.16*min(1\\,t/${D}))/2)*2:eval=frame,crop=${W}:${H}:(iw-${W})/2:(ih-${H})/2`;
+    case 'hook_punch': {
+      const tailD = Math.max(0.2, effDur - 0.35).toFixed(3);
+      const expr = `if(lt(t\\,0.35)\\,1.24-0.20*(t/0.35)\\,1.04+0.06*min(1\\,(t-0.35)/${tailD}))`;
+      return `,scale=w=trunc(${W}*${expr}/2)*2:h=trunc(${H}*${expr}/2)*2:eval=frame,crop=${W}:${H}:(iw-${W})/2:(ih-${H})/2`;
+    }
+    case 'pan_right':
+      return `,scale=${sW}:${sH},crop=${W}:${H}:(iw-${W})*min(1\\,t/${D}):(ih-${H})/2`;
+    case 'pan_left':
+      return `,scale=${sW}:${sH},crop=${W}:${H}:(iw-${W})*(1-min(1\\,t/${D})):(ih-${H})/2`;
+    case 'tilt_up':
+      return `,scale=${sW}:${sH},crop=${W}:${H}:(iw-${W})/2:(ih-${H})*(1-min(1\\,t/${D}))`;
+    default:
+      return '';
+  }
 }
 
 export function getBatchJob(batchId: string): RenderBatchJob | undefined {
@@ -81,6 +124,7 @@ export interface StartBatchOptions {
   crf?: 20 | 23;
   videoEncoder?: VideoEncoderId;
   concurrency?: 1 | 2 | 3 | 4;
+  exportCoverMode?: CoverExportMode;
   filenamePattern?: string;
   overlayPngMap?: Record<string, string>;
   subtitleStripsMap?: Record<string, PreRenderedSubtitleStripInput[]>;
@@ -96,6 +140,8 @@ export function startBatchRender(project: ProjectData, opts: StartBatchOptions =
     4,
     Math.max(1, Number(opts.concurrency || project.renderConcurrency || 2))
   ) as 1 | 2 | 3 | 4;
+  const exportCoverMode: CoverExportMode =
+    opts.exportCoverMode || project.exportCoverMode || 'none';
   const pattern = opts.filenamePattern || project.filenamePattern || '{project}_{index}_{group}';
 
   const targetGroups = project.videoGroups.filter((g) => {
@@ -137,6 +183,7 @@ export function startBatchRender(project: ProjectData, opts: StartBatchOptions =
     fps,
     encoderRequested,
     concurrency,
+    exportCoverMode,
     createdAt: new Date().toISOString(),
     status: items.length === 0 ? 'completed' : 'running',
     items,
@@ -296,6 +343,8 @@ async function renderSingleGroup(
       cropPrefix = `,crop=trunc(iw*${cw.toFixed(4)}/2)*2:trunc(ih*${ch.toFixed(4)}/2)*2:trunc(iw*${cx.toFixed(4)}):trunc(ih*${cy.toFixed(4)})`;
     }
 
+    const motionSuffix = buildClipMotionFilterSuffix(clip.motion, W, H, effDur);
+
     if (clip.fitMode === 'blur') {
       const bw = Math.max(64, Math.floor(W / 4 / 2) * 2);
       const bh = Math.max(64, Math.floor(H / 4 / 2) * 2);
@@ -303,15 +352,15 @@ async function renderSingleGroup(
         `[${i}:v]${ptsExpr}${cropPrefix},split=2[vsrc_${i}_a][vsrc_${i}_b]`,
         `[vsrc_${i}_a]scale=${bw}:${bh}:force_original_aspect_ratio=increase,crop=${bw}:${bh},gblur=sigma=10,scale=${W}:${H},eq=brightness=-0.07[vbg_${i}]`,
         `[vsrc_${i}_b]scale=${W}:${H}:force_original_aspect_ratio=decrease[vfg_${i}]`,
-        `[vbg_${i}][vfg_${i}]overlay=(W-w)/2:(H-h)/2,trim=duration=${effDur.toFixed(3)},setpts=PTS-STARTPTS,fps=${fps},format=yuv420p,setsar=1[v${i}]`
+        `[vbg_${i}][vfg_${i}]overlay=(W-w)/2:(H-h)/2,trim=duration=${effDur.toFixed(3)},setpts=PTS-STARTPTS,fps=${fps}${motionSuffix},format=yuv420p,setsar=1[v${i}]`
       );
     } else if (clip.fitMode === 'contain') {
       filterParts.push(
-        `[${i}:v]${ptsExpr}${cropPrefix},scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,trim=duration=${effDur.toFixed(3)},setpts=PTS-STARTPTS,fps=${fps},format=yuv420p,setsar=1[v${i}]`
+        `[${i}:v]${ptsExpr}${cropPrefix},scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,trim=duration=${effDur.toFixed(3)},setpts=PTS-STARTPTS,fps=${fps}${motionSuffix},format=yuv420p,setsar=1[v${i}]`
       );
     } else {
       filterParts.push(
-        `[${i}:v]${ptsExpr}${cropPrefix},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},trim=duration=${effDur.toFixed(3)},setpts=PTS-STARTPTS,fps=${fps},format=yuv420p,setsar=1[v${i}]`
+        `[${i}:v]${ptsExpr}${cropPrefix},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},trim=duration=${effDur.toFixed(3)},setpts=PTS-STARTPTS,fps=${fps}${motionSuffix},format=yuv420p,setsar=1[v${i}]`
       );
     }
 
@@ -329,9 +378,10 @@ async function renderSingleGroup(
     }
   }
 
-  // Sequence concatenation / transitions
+  // Sequence concatenation / transitions (tracking exact clip start times for Viral SFX cues)
   const N = validClips.length;
   let totalDur = effDurs[0];
+  const clipStartTimesSec: number[] = [0];
 
   const hasAnyTransition = validClips.some(
     (entry, idx) => idx < N - 1 && entry.clip.transition && entry.clip.transition !== 'none'
@@ -340,6 +390,11 @@ async function renderSingleGroup(
   if (N === 1) {
     filterParts.push(`[v0]null[vseq]`, `[a0]anull[aseq]`);
   } else if (!hasAnyTransition) {
+    let acc = 0;
+    for (let i = 1; i < N; i++) {
+      acc += effDurs[i - 1];
+      clipStartTimesSec.push(acc);
+    }
     const pairs = validClips.map((_, idx) => `[v${idx}][a${idx}]`).join('');
     filterParts.push(`${pairs}concat=n=${N}:v=1:a=1[vseq][aseq]`);
     totalDur = effDurs.reduce((s, d) => s + d, 0);
@@ -354,6 +409,7 @@ async function renderSingleGroup(
       const outA = i === N - 1 ? '[aseq]' : `[ax${i}]`;
 
       if (!tr || tr === 'none' || cumDur < 0.45 || effDurs[i] < 0.45) {
+        clipStartTimesSec.push(cumDur);
         const tmpV = `[vcat_tmp_${i}]`;
         filterParts.push(
           `${currV}${currA}[v${i}][a${i}]concat=n=2:v=1:a=1${tmpV}${outA}`,
@@ -363,6 +419,7 @@ async function renderSingleGroup(
       } else {
         const trDur = Math.min(0.35, cumDur * 0.3, effDurs[i] * 0.3);
         const offset = Math.max(0.05, cumDur - trDur);
+        clipStartTimesSec.push(offset);
         const tmpV = `[vxf_tmp_${i}]`;
         filterParts.push(
           `${currV}[v${i}]xfade=transition=${tr}:duration=${trDur.toFixed(3)}:offset=${offset.toFixed(3)}${tmpV}`,
@@ -647,6 +704,111 @@ async function renderSingleGroup(
     filterParts.push(`[aseq]${fadeOut}${currAudioPad}`);
   }
 
+  // 3B) Viral Ad SFX Cues (Opening Hook + Clip Transitions + Closing CTA)
+  const sfxVol = Math.min(1.5, Math.max(0, Number(group.sfx?.volume ?? 0.65)));
+  if (group.sfx?.enabled && sfxVol > 0.01) {
+    ensureBuiltinSfxReady();
+    const rawEvents: { sfxId: Exclude<SfxPresetId, 'none'>; timeSec: number; gainMul: number }[] = [];
+
+    if (group.sfx.hookSfxId && group.sfx.hookSfxId !== 'none') {
+      rawEvents.push({ sfxId: group.sfx.hookSfxId, timeSec: 0.03, gainMul: 1.0 });
+    }
+
+    const hasCtaSfx = Boolean(group.sfx.ctaSfxId && group.sfx.ctaSfxId !== 'none');
+    if (group.sfx.transitionSfxId && group.sfx.transitionSfxId !== 'none' && N >= 2) {
+      for (let cIdx = 1; cIdx < N; cIdx++) {
+        // Avoid stacking transition SFX + CTA SFX on the exact same final cut
+        if (cIdx === N - 1 && hasCtaSfx) continue;
+        if (rawEvents.length >= 15) break;
+        const cutT = clipStartTimesSec[cIdx] ?? 0;
+        if (cutT > 0.12 && cutT < totalDur - 0.12) {
+          rawEvents.push({
+            sfxId: group.sfx.transitionSfxId,
+            timeSec: Math.max(0.02, cutT - 0.04),
+            gainMul: 0.88,
+          });
+        }
+      }
+    }
+
+    if (hasCtaSfx && group.sfx.ctaSfxId && group.sfx.ctaSfxId !== 'none') {
+      if (N >= 2) {
+        const lastCut = clipStartTimesSec[N - 1] ?? Math.max(0.4, totalDur - 1.5);
+        if (lastCut < totalDur - 0.12) {
+          rawEvents.push({
+            sfxId: group.sfx.ctaSfxId,
+            timeSec: Math.max(0.12, lastCut + 0.02),
+            gainMul: 1.0,
+          });
+        }
+      } else if (totalDur >= 2.0) {
+        rawEvents.push({
+          sfxId: group.sfx.ctaSfxId,
+          timeSec: Math.max(0.5, totalDur - 1.4),
+          gainMul: 1.0,
+        });
+      }
+    }
+
+    const cappedEvents = rawEvents
+      .filter((ev) => Boolean(getSfxFilePath(ev.sfxId)))
+      .slice(0, 16);
+
+    if (cappedEvents.length > 0) {
+      const groupedBySfx = new Map<Exclude<SfxPresetId, 'none'>, typeof cappedEvents>();
+      for (const ev of cappedEvents) {
+        const arr = groupedBySfx.get(ev.sfxId) || [];
+        arr.push(ev);
+        groupedBySfx.set(ev.sfxId, arr);
+      }
+
+      const sfxEventPads: string[] = [];
+      let sfxGroupIdx = 0;
+      let evGlobalIdx = 0;
+
+      for (const [sfxId, evList] of groupedBySfx.entries()) {
+        const wavPath = getSfxFilePath(sfxId)!;
+        const inIdx = nextInputIdx++;
+        inputArgs.push('-i', wavPath);
+
+        const normPad = `[asfx_src_${sfxGroupIdx}]`;
+        filterParts.push(
+          `[${inIdx}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo${normPad}`
+        );
+
+        let branchPads: string[] = [];
+        if (evList.length === 1) {
+          branchPads = [normPad];
+        } else {
+          branchPads = evList.map((_, j) => `[asfx_sp_${sfxGroupIdx}_${j}]`);
+          filterParts.push(`${normPad}asplit=${evList.length}${branchPads.join('')}`);
+        }
+
+        for (let j = 0; j < evList.length; j++) {
+          const ev = evList[j];
+          const delayMs = Math.max(0, Math.round(ev.timeSec * 1000));
+          const delayExpr = delayMs > 0 ? `adelay=${delayMs}|${delayMs},` : '';
+          const vol = (sfxVol * ev.gainMul).toFixed(3);
+          const outPad = `[asfx_ev_${evGlobalIdx++}]`;
+          filterParts.push(
+            `${branchPads[j]}${delayExpr}volume=${vol},apad=whole_dur=${totalDur.toFixed(3)},atrim=0:${totalDur.toFixed(3)},asetpts=PTS-STARTPTS${outPad}`
+          );
+          sfxEventPads.push(outPad);
+        }
+        sfxGroupIdx++;
+      }
+
+      if (sfxEventPads.length > 0) {
+        const allMixInputs = `${currAudioPad}${sfxEventPads.join('')}`;
+        const totalMixCount = 1 + sfxEventPads.length;
+        filterParts.push(
+          `${allMixInputs}amix=inputs=${totalMixCount}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.96:level=false[apre_with_sfx]`
+        );
+        currAudioPad = '[apre_with_sfx]';
+      }
+    }
+  }
+
   // =========================================================================
   // DIMENSION 2 & 3: Audio Chromaprint Dispersion + Lockstep Master Tempo Jitter
   // Applied AFTER subtitle burn-in so voiceover & dynamic subtitles stay 100% synced!
@@ -862,6 +1024,45 @@ async function renderSingleGroup(
   }
 
   const stat = fs.statSync(outFilePath);
+
+  // Extract Synchronized High-Res Ad Cover (.jpg) when enabled
+  if (batch.exportCoverMode && batch.exportCoverMode !== 'none') {
+    let seekSec = 0.35;
+    if (batch.exportCoverMode === 'first_highlight') {
+      seekSec = Math.min(0.35, Math.max(0, finalOutDur - 1 / fps));
+    } else if (batch.exportCoverMode === 'golden_3s') {
+      seekSec = Math.min(1.8, Math.max(0, finalOutDur - 1 / fps));
+    } else if (batch.exportCoverMode === 'middle_frame') {
+      seekSec = Math.max(0.05, finalOutDur * 0.5);
+    }
+
+    const baseOutName = item.outputFilename.replace(/\.mp4$/i, '');
+    const coverFilename = `${baseOutName}_封面.jpg`;
+    const coverPath = path.join(batchDir, coverFilename);
+
+    try {
+      await execFileAsync(ffmpegExecutable, [
+        '-y',
+        '-ss',
+        seekSec.toFixed(3),
+        '-i',
+        outFilePath,
+        '-frames:v',
+        '1',
+        '-q:v',
+        '2',
+        coverPath,
+      ]);
+      if (fs.existsSync(coverPath)) {
+        item.coverFilename = coverFilename;
+        item.coverUrl = `/storage/exports/${batch.batchId}/${encodeURIComponent(coverFilename)}`;
+      }
+    } catch (coverErr: any) {
+      item.coverError = '封面提取失败，请检查 FFmpeg 日志';
+      console.warn('[RenderEngine] Cover frame extraction warning:', coverErr?.message);
+    }
+  }
+
   item.status = 'done';
   item.progress = 100;
   item.outputUrl = `/storage/exports/${batch.batchId}/${encodeURIComponent(item.outputFilename)}`;
@@ -909,6 +1110,12 @@ export function streamBatchZip(batchId: string, res: Response) {
     const fp = path.join(batchDir, item.outputFilename);
     if (fs.existsSync(fp)) {
       archive.file(fp, { name: item.outputFilename });
+    }
+    if (item.coverFilename) {
+      const coverFp = path.join(batchDir, item.coverFilename);
+      if (fs.existsSync(coverFp)) {
+        archive.file(coverFp, { name: item.coverFilename });
+      }
     }
   }
 

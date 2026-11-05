@@ -32,6 +32,7 @@ import {
   detectAudioBeats,
   detectVideoScenes,
 } from './smartSplitBeatService.js';
+import { ensureBuiltinSfxReady } from './sfxGenerator.js';
 import { decodeUploadFilename, probeAndProcessFile } from './mediaService.js';
 import {
   BreathRemovalResult,
@@ -64,6 +65,7 @@ import {
 } from '../shared/schema.js';
 
 ensureStorageDirs();
+ensureBuiltinSfxReady();
 
 const app = express();
 app.use(cors());
@@ -770,13 +772,21 @@ app.get('/api/renders/:batchId/zip', (req, res) => {
 });
 
 app.get('/api/download/export/:batchId/:filename', (req, res) => {
-  const filePath = path.join(EXPORTS_DIR, req.params.batchId, req.params.filename);
+  const safeName = path.basename(req.params.filename);
+  const filePath = path.join(EXPORTS_DIR, path.basename(req.params.batchId), safeName);
   if (!fs.existsSync(filePath)) {
     res.status(404).send('文件不存在');
     return;
   }
-  const encoded = encodeURIComponent(req.params.filename);
-  res.setHeader('Content-Type', 'video/mp4');
+  const encoded = encodeURIComponent(safeName);
+  const ext = path.extname(safeName).toLowerCase();
+  const mime =
+    ext === '.jpg' || ext === '.jpeg'
+      ? 'image/jpeg'
+      : ext === '.png'
+      ? 'image/png'
+      : 'video/mp4';
+  res.setHeader('Content-Type', mime);
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encoded}`);
   fs.createReadStream(filePath).pipe(res);
 });

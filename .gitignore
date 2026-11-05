@@ -18,6 +18,7 @@ storage/temp/*
 storage/thumbnails/*
 storage/projects/*
 storage/models/*
+storage/sfx/*
 storage/_ai_config.json
 !storage/.gitkeep
 

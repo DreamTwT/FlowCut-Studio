@@ -31,6 +31,7 @@ import {
   buildDedupFromPreset,
   buildSyncedSubtitlesFromScript,
   createDefaultDedupConfig,
+  createDefaultSfxConfig,
   createDefaultSubtitleConfig,
   createDefaultWatermarkConfig,
   DEDUP_PRESETS,
@@ -43,7 +44,14 @@ import {
   FitMode,
   getGroupTotalDuration,
   GroupOverlayConfig,
+  GroupSfxConfig,
   MediaAsset,
+  MOTION_MATRIX_STRATEGIES,
+  MOTION_PRESET_LABELS,
+  MotionMatrixStrategy,
+  MotionPresetId,
+  SFX_PRESETS,
+  SfxPresetId,
   SUBTITLE_STYLES,
   SubtitleConfig,
   SubtitleStyleId,
@@ -57,6 +65,7 @@ import {
   WatermarkCorner,
 } from '@shared/schema';
 import { formatShortSec, uid } from '../utils/format';
+import { playBuiltinSfxPreview } from '../utils/motionAndSfx';
 import { CustomSelect } from './CustomSelect';
 
 interface Props {
@@ -102,6 +111,11 @@ interface Props {
     strategy: BeatSyncStrategy,
     applyAll: boolean
   ) => void;
+  onSmartMotionGroup?: (
+    groupId: string,
+    strategy: MotionMatrixStrategy,
+    applyAll: boolean
+  ) => void;
 }
 
 export const InspectorPanel: React.FC<Props> = ({
@@ -132,7 +146,9 @@ export const InspectorPanel: React.FC<Props> = ({
   beatSyncBusy = false,
   lastBeatInfo = null,
   onBeatSyncGroup,
+  onSmartMotionGroup,
 }) => {
+  const [motionStrategy, setMotionStrategy] = useState<MotionMatrixStrategy>('smart_alternating');
   const [tab, setTab] = useState<'clip' | 'overlay' | 'audio' | 'brand_dedup'>('overlay');
   const [textSubTab, setTextSubTab] = useState<'subtitles' | 'stickers'>('subtitles');
   const [customSubScript, setCustomSubScript] = useState('');
@@ -253,6 +269,63 @@ export const InspectorPanel: React.FC<Props> = ({
                       </button>
                     ))}
                   </div>
+                </div>
+
+                {/* Dynamic Camera Motion (Ken Burns / Hook Punch) */}
+                <div className="p-2.5 rounded-xl bg-[#181C28] border border-[#27304A] space-y-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <label className="text-xs font-semibold text-[#00E5FF] flex items-center gap-1">
+                      <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                      动态运镜预设
+                    </label>
+                    <span className="text-[10px] text-[#94A3B8]">图片/视频通用</span>
+                  </div>
+
+                  <CustomSelect<MotionPresetId>
+                    value={selectedClip.motion || 'none'}
+                    options={(Object.keys(MOTION_PRESET_LABELS) as MotionPresetId[]).map((mId) => ({
+                      value: mId,
+                      label: MOTION_PRESET_LABELS[mId].label,
+                      rightMeta: MOTION_PRESET_LABELS[mId].badge,
+                      metaTone: mId === 'none' ? 'muted' : 'cyan',
+                    }))}
+                    onChange={(val) =>
+                      onUpdateClip(activeGroup.id, selectedClip.id, {
+                        motion: val,
+                      })
+                    }
+                  />
+
+                  {onSmartMotionGroup && (
+                    <div className="pt-1 border-t border-[#252D44] space-y-1.5">
+                      <CustomSelect<MotionMatrixStrategy>
+                        size="sm"
+                        value={motionStrategy}
+                        options={MOTION_MATRIX_STRATEGIES.filter((s) => s.id !== 'none').map((s) => ({
+                          value: s.id,
+                          label: `批量策略：${s.label}`,
+                        }))}
+                        onChange={(val) => setMotionStrategy(val)}
+                      />
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => onSmartMotionGroup(activeGroup.id, motionStrategy, false)}
+                          className="h-8 px-2 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/35 text-[#00E5FF] font-semibold text-[11px] whitespace-nowrap flex items-center justify-center gap-1 transition"
+                        >
+                          <Wand2 className="w-3 h-3 shrink-0" />
+                          智能编排本组
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onSmartMotionGroup(activeGroup.id, motionStrategy, true)}
+                          className="h-8 px-2 rounded-lg bg-[#22283A] hover:bg-[#2C344D] border border-[#343E5C] text-[#CBD5E1] font-semibold text-[11px] whitespace-nowrap flex items-center justify-center gap-1 transition"
+                        >
+                          同步全部成片组
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Speed */}
@@ -1431,6 +1504,195 @@ export const InspectorPanel: React.FC<Props> = ({
                   className="w-full jy-slider"
                 />
               </div>
+
+              {/* 4. Viral Ad SFX Pack (Opening Hook / Transitions / Closing CTA) */}
+              {(() => {
+                const sfxCfg: GroupSfxConfig = activeGroup.sfx || {
+                  ...createDefaultSfxConfig(),
+                };
+                const patchSfx = (patch: Partial<GroupSfxConfig>) => {
+                  onUpdateGroupAudio(activeGroup.id, {
+                    sfx: {
+                      ...sfxCfg,
+                      ...patch,
+                    },
+                  });
+                };
+                const sfxOptions = [
+                  { value: 'none' as const, label: '无音效', rightMeta: '', metaTone: 'muted' as const },
+                  ...Object.values(SFX_PRESETS).map((p) => ({
+                    value: p.id,
+                    label: p.name,
+                    rightMeta: p.badge,
+                    metaTone: 'amber' as const,
+                  })),
+                ];
+
+                return (
+                  <div className="p-3 rounded-xl bg-[#1A1826] border border-fuchsia-500/25 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-1.5 text-xs font-bold text-fuchsia-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={sfxCfg.enabled}
+                          onChange={(e) => {
+                            const nextOn = e.target.checked;
+                            if (
+                              nextOn &&
+                              sfxCfg.hookSfxId === 'none' &&
+                              sfxCfg.transitionSfxId === 'none' &&
+                              sfxCfg.ctaSfxId === 'none'
+                            ) {
+                              onUpdateGroupAudio(activeGroup.id, {
+                                sfx: { ...createDefaultSfxConfig(), enabled: true },
+                              });
+                            } else {
+                              patchSfx({ enabled: nextOn });
+                            }
+                          }}
+                          className="accent-fuchsia-400"
+                        />
+                        <span>💥 爆款网感音效包</span>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const preset = { ...createDefaultSfxConfig(), enabled: true };
+                          onUpdateGroupAudio(activeGroup.id, { sfx: preset });
+                          playBuiltinSfxPreview(preset.hookSfxId, preset.volume);
+                        }}
+                        className="h-7 px-2 rounded-md bg-fuchsia-500/15 hover:bg-fuchsia-500/25 border border-fuchsia-400/30 text-fuchsia-300 text-[10px] font-semibold whitespace-nowrap transition"
+                      >
+                        一键带货音效
+                      </button>
+                    </div>
+
+                    {sfxCfg.enabled ? (
+                      <div className="space-y-2 pt-0.5">
+                        {/* Opening Hook SFX */}
+                        <div className="space-y-1">
+                          <span className="text-[11px] text-[#CBD5E1] font-medium block">
+                            开场黄金3秒钩子音效
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <CustomSelect<SfxPresetId>
+                              size="sm"
+                              accent="amber"
+                              value={sfxCfg.hookSfxId}
+                              options={sfxOptions}
+                              onChange={(val) => {
+                                patchSfx({ hookSfxId: val });
+                                if (val !== 'none') playBuiltinSfxPreview(val, sfxCfg.volume);
+                              }}
+                              className="flex-1 min-w-0"
+                            />
+                            <button
+                              type="button"
+                              disabled={sfxCfg.hookSfxId === 'none'}
+                              onClick={() =>
+                                playBuiltinSfxPreview(sfxCfg.hookSfxId, sfxCfg.volume)
+                              }
+                              title="试听开场音效"
+                              className="h-8 px-2 rounded-lg bg-[#252238] hover:bg-fuchsia-500/25 border border-[#383254] text-fuchsia-300 text-[11px] whitespace-nowrap flex items-center gap-1 shrink-0 disabled:opacity-40 transition"
+                            >
+                              <Volume2 className="w-3.5 h-3.5" />
+                              试听
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Clip Cut Transition SFX */}
+                        <div className="space-y-1">
+                          <span className="text-[11px] text-[#CBD5E1] font-medium block">
+                            分镜切点转场音效（自动对齐切镜）
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <CustomSelect<SfxPresetId>
+                              size="sm"
+                              accent="amber"
+                              value={sfxCfg.transitionSfxId}
+                              options={sfxOptions}
+                              onChange={(val) => {
+                                patchSfx({ transitionSfxId: val });
+                                if (val !== 'none') playBuiltinSfxPreview(val, sfxCfg.volume);
+                              }}
+                              className="flex-1 min-w-0"
+                            />
+                            <button
+                              type="button"
+                              disabled={sfxCfg.transitionSfxId === 'none'}
+                              onClick={() =>
+                                playBuiltinSfxPreview(sfxCfg.transitionSfxId, sfxCfg.volume)
+                              }
+                              title="试听转场音效"
+                              className="h-8 px-2 rounded-lg bg-[#252238] hover:bg-fuchsia-500/25 border border-[#383254] text-fuchsia-300 text-[11px] whitespace-nowrap flex items-center gap-1 shrink-0 disabled:opacity-40 transition"
+                            >
+                              <Volume2 className="w-3.5 h-3.5" />
+                              试听
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Closing CTA SFX */}
+                        <div className="space-y-1">
+                          <span className="text-[11px] text-[#CBD5E1] font-medium block">
+                            结尾转化促单音效（最后一段触发）
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <CustomSelect<SfxPresetId>
+                              size="sm"
+                              accent="amber"
+                              value={sfxCfg.ctaSfxId}
+                              options={sfxOptions}
+                              onChange={(val) => {
+                                patchSfx({ ctaSfxId: val });
+                                if (val !== 'none') playBuiltinSfxPreview(val, sfxCfg.volume);
+                              }}
+                              className="flex-1 min-w-0"
+                            />
+                            <button
+                              type="button"
+                              disabled={sfxCfg.ctaSfxId === 'none'}
+                              onClick={() =>
+                                playBuiltinSfxPreview(sfxCfg.ctaSfxId, sfxCfg.volume)
+                              }
+                              title="试听结尾音效"
+                              className="h-8 px-2 rounded-lg bg-[#252238] hover:bg-fuchsia-500/25 border border-[#383254] text-fuchsia-300 text-[11px] whitespace-nowrap flex items-center gap-1 shrink-0 disabled:opacity-40 transition"
+                            >
+                              <Volume2 className="w-3.5 h-3.5" />
+                              试听
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* SFX Volume */}
+                        <div className="pt-1">
+                          <div className="flex justify-between text-[11px] text-[#B8C0D0]">
+                            <span>网感音效混音音量</span>
+                            <span className="font-mono text-fuchsia-300">
+                              {Math.round((sfxCfg.volume ?? 0.65) * 100)}%
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.1}
+                            max={1.3}
+                            step={0.05}
+                            value={sfxCfg.volume ?? 0.65}
+                            onChange={(e) => patchSfx({ volume: parseFloat(e.target.value) })}
+                            className="w-full accent-fuchsia-400"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-[#8E96AA] leading-relaxed">
+                        开启后自动在开场钩子、分镜切点与结尾转化处混入无版权高网感音效（支持预览与导出）。
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
 
               <button
                 onClick={() => onSyncAudioAllGroups(activeGroup)}

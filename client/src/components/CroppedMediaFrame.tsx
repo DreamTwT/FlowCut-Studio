@@ -5,13 +5,18 @@ import {
   FitMode,
   FULL_CROP,
   MediaAsset,
+  MotionPresetId,
 } from '@shared/schema';
+import { computeClipMotionCssTransform } from '../utils/motionAndSfx';
 
 interface Props {
   asset: MediaAsset;
   crop?: CropBox;
   fitMode?: FitMode;
   aspectRatio: AspectRatio;
+  motion?: MotionPresetId;
+  clipElapsedSec?: number;
+  clipDurationSec?: number;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   muted?: boolean;
   onTimeUpdate?: React.ReactEventHandler<HTMLVideoElement>;
@@ -30,6 +35,9 @@ export const CroppedMediaFrame: React.FC<Props> = ({
   crop = FULL_CROP,
   fitMode = 'cover',
   aspectRatio,
+  motion = 'none',
+  clipElapsedSec = 0,
+  clipDurationSec = 1,
   videoRef,
   muted = false,
   onTimeUpdate,
@@ -102,35 +110,51 @@ export const CroppedMediaFrame: React.FC<Props> = ({
   };
 
   const bgThumb = asset.thumbnailUrl || asset.url;
+  const progress01 =
+    clipDurationSec > 0.05 ? Math.min(1, Math.max(0, clipElapsedSec / clipDurationSec)) : 0;
+  const motionTransform = computeClipMotionCssTransform(motion, progress01, clipElapsedSec);
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-black">
-      {/* Frosted Gaussian Blur Background when fitMode === 'blur' */}
-      {fitMode === 'blur' && bgThumb && (
-        <img
-          src={bgThumb}
-          alt=""
-          className="absolute inset-0 w-full h-full object-cover scale-115 blur-xl brightness-75 opacity-90 pointer-events-none"
-        />
-      )}
-
-      {/* Cropped Foreground Viewport */}
-      <div className="absolute overflow-hidden" style={boxStyle}>
-        {asset.type === 'image' ? (
-          <img src={asset.url} alt={asset.name} style={innerMediaStyle} draggable={false} />
-        ) : (
-          <video
-            ref={videoRef as React.RefObject<HTMLVideoElement>}
-            src={asset.url}
-            style={innerMediaStyle}
-            playsInline
-            preload="auto"
-            muted={muted}
-            onTimeUpdate={onTimeUpdate}
-            onEnded={onEnded}
-            onLoadedMetadata={onLoadedMetadata}
+      <div
+        className="relative w-full h-full overflow-hidden"
+        style={
+          motionTransform !== 'none'
+            ? {
+                transform: motionTransform,
+                transformOrigin: 'center center',
+                willChange: 'transform',
+              }
+            : undefined
+        }
+      >
+        {/* Frosted Gaussian Blur Background when fitMode === 'blur' */}
+        {fitMode === 'blur' && bgThumb && (
+          <img
+            src={bgThumb}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover scale-115 blur-xl brightness-75 opacity-90 pointer-events-none"
           />
         )}
+
+        {/* Cropped Foreground Viewport */}
+        <div className="absolute overflow-hidden" style={boxStyle}>
+          {asset.type === 'image' ? (
+            <img src={asset.url} alt={asset.name} style={innerMediaStyle} draggable={false} />
+          ) : (
+            <video
+              ref={videoRef as React.RefObject<HTMLVideoElement>}
+              src={asset.url}
+              style={innerMediaStyle}
+              playsInline
+              preload="auto"
+              muted={muted}
+              onTimeUpdate={onTimeUpdate}
+              onEnded={onEnded}
+              onLoadedMetadata={onLoadedMetadata}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

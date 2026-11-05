@@ -7,6 +7,7 @@ import {
   Film,
   FolderOpen,
   Gauge,
+  Image as ImageIcon,
   Loader2,
   Play,
   RefreshCw,
@@ -18,6 +19,8 @@ import {
 } from 'lucide-react';
 import {
   AspectRatio,
+  COVER_EXPORT_MODES,
+  CoverExportMode,
   ExportQuality,
   getTargetDimensions,
   HardwareAccelerationReport,
@@ -64,6 +67,9 @@ export const BatchExportModal: React.FC<Props> = ({
   );
   const [concurrency, setConcurrency] = useState<1 | 2 | 3 | 4>(
     project.renderConcurrency || hardware?.recommendedConcurrency || 2
+  );
+  const [exportCoverMode, setExportCoverMode] = useState<CoverExportMode>(
+    project.exportCoverMode || 'none'
   );
   const [pattern, setPattern] = useState(
     project.filenamePattern || '{project}_{index}_{group}'
@@ -117,6 +123,7 @@ export const BatchExportModal: React.FC<Props> = ({
         exportCrf: crf,
         videoEncoder,
         renderConcurrency: concurrency,
+        exportCoverMode,
         filenamePattern: pattern,
       });
       const updatedProject: ProjectData = {
@@ -127,6 +134,7 @@ export const BatchExportModal: React.FC<Props> = ({
         exportCrf: crf,
         videoEncoder,
         renderConcurrency: concurrency,
+        exportCoverMode,
         filenamePattern: pattern,
       };
       const started = await startBatchRenderApi(updatedProject, {
@@ -137,6 +145,7 @@ export const BatchExportModal: React.FC<Props> = ({
         crf,
         videoEncoder,
         concurrency,
+        exportCoverMode,
         filenamePattern: pattern,
       });
       setBatch(started);
@@ -200,7 +209,7 @@ export const BatchExportModal: React.FC<Props> = ({
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <span>FFmpeg 批量生产渲染中心</span>
                 <span className="px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] text-[10px] font-mono">
-                  v2.1 GPU加速引擎
+                  v2.4 GPU加速引擎
                 </span>
               </h3>
               <p className="text-[11px] text-[#8A90A2]">
@@ -424,6 +433,26 @@ export const BatchExportModal: React.FC<Props> = ({
                 </div>
               </div>
 
+              {isStandaloneBrowserMode && (
+                <p className="text-xs text-amber-300">浏览器独立预览模式暂不支持运镜、音效或封面导出；请使用桌面版或本地服务。</p>
+              )}
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-[#FFB800] flex items-center gap-1.5">
+                  <ImageIcon className="w-3.5 h-3.5" /> 投流封面同步导出
+                </label>
+                <CustomSelect<CoverExportMode>
+                  accent="amber"
+                  value={exportCoverMode}
+                  options={(Object.keys(COVER_EXPORT_MODES) as CoverExportMode[]).map((id) => ({
+                    value: id, label: COVER_EXPORT_MODES[id].label,
+                    rightMeta: COVER_EXPORT_MODES[id].badge,
+                    metaTone: id === 'none' ? 'muted' : 'amber',
+                  }))}
+                  onChange={setExportCoverMode}
+                  className="w-full"
+                />
+              </div>
+
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-[#D1D5DB]">
                   批量文件自动命名规则 (支持变量 {'{project}'} {'{index}'} {'{group}'})
@@ -533,6 +562,28 @@ export const BatchExportModal: React.FC<Props> = ({
                     {/* Item Actions */}
                     {item.status === 'done' && item.outputUrl && (
                       <div className="flex items-center gap-1.5 shrink-0">
+                        {item.coverError && <span className="text-xs text-amber-300" title={item.coverError}>封面失败</span>}
+                        {item.coverUrl && item.coverFilename && (
+                          <a
+                            href={
+                              item.coverUrl.startsWith('blob:') || item.coverUrl.startsWith('data:')
+                                ? item.coverUrl
+                                : `/api/download/export/${batch.batchId}/${encodeURIComponent(
+                                    item.coverFilename
+                                  )}`
+                            }
+                            download={item.coverFilename}
+                            title={`点击下载高清投流封面图：${item.coverFilename}`}
+                            className="h-8 pl-1.5 pr-2.5 rounded-lg bg-[#FFB800]/15 hover:bg-[#FFB800] border border-[#FFB800]/35 text-[#FFB800] hover:text-[#111318] font-semibold text-xs whitespace-nowrap flex items-center gap-1.5 transition"
+                          >
+                            <img
+                              src={item.coverUrl}
+                              alt=""
+                              className="w-5 h-5 rounded object-cover border border-black/30 shrink-0"
+                            />
+                            <span>封面</span>
+                          </a>
+                        )}
                         <button
                           onClick={() =>
                             setPreviewMp4Url({
@@ -540,7 +591,7 @@ export const BatchExportModal: React.FC<Props> = ({
                               title: item.outputFilename,
                             })
                           }
-                          className="px-2.5 py-1.5 rounded-lg bg-[#272C3D] hover:bg-[#32384E] text-xs text-white flex items-center gap-1 transition"
+                          className="h-8 px-2.5 rounded-lg bg-[#272C3D] hover:bg-[#32384E] text-xs text-white whitespace-nowrap flex items-center gap-1 transition"
                         >
                           <Play className="w-3 h-3 fill-current text-[#00E5FF]" />
                           验片
@@ -554,7 +605,7 @@ export const BatchExportModal: React.FC<Props> = ({
                                 )}`
                           }
                           download={item.outputFilename}
-                          className="px-2.5 py-1.5 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF] text-[#00E5FF] hover:text-[#081016] font-semibold text-xs flex items-center gap-1 transition"
+                          className="h-8 px-2.5 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF] text-[#00E5FF] hover:text-[#081016] font-semibold text-xs whitespace-nowrap flex items-center gap-1 transition"
                         >
                           <Download className="w-3.5 h-3.5" />
                           下载

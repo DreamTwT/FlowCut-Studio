@@ -28,6 +28,7 @@ import {
   getGroupVoiceoverDuration,
   isCustomCropped,
   MediaAsset,
+  MOTION_PRESET_LABELS,
   TimelineClip,
   TRANSITION_LABELS,
   VideoGroup,
@@ -397,6 +398,14 @@ export const VideoGroupsBoard: React.FC<Props> = ({
                       <span className="truncate">{bgmAsset.name}</span>
                     </span>
                   )}
+                  {group.sfx?.enabled && (
+                    <span
+                      className="px-1.5 py-0.5 rounded bg-fuchsia-500/18 text-fuchsia-300 whitespace-nowrap"
+                      title="已开启爆款网感音效包"
+                    >
+                      💥音效
+                    </span>
+                  )}
                 </div>
 
                 {/* Group Quick Action Bar */}
@@ -551,6 +560,14 @@ export const VideoGroupsBoard: React.FC<Props> = ({
                             {Math.abs(clip.speed - 1) > 0.02 && (
                               <span className="px-1 rounded bg-[#FFB800] text-[#111318] text-[9px] font-bold">
                                 {clip.speed}x
+                              </span>
+                            )}
+                            {clip.motion && clip.motion !== 'none' && (
+                              <span
+                                className="px-1 rounded bg-cyan-500/90 text-[#071016] text-[9px] font-bold whitespace-nowrap"
+                                title={MOTION_PRESET_LABELS[clip.motion]?.label}
+                              >
+                                {MOTION_PRESET_LABELS[clip.motion]?.badge}
                               </span>
                             )}
                           </div>

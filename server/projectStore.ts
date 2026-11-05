@@ -3,6 +3,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { PROJECTS_DIR, UPLOADS_DIR, THUMBS_DIR } from './paths.js';
 import {
+  assignSmartMotionToClips,
   buildSyncedSubtitlesFromScript,
   FULL_CROP,
   generateDedupVariant,
@@ -421,6 +422,9 @@ export function generateGroupsFromMatrix(
         isLast ? 'none' : matrix.defaultTransition
       );
     });
+    if (matrix.defaultMotionStrategy && matrix.defaultMotionStrategy !== 'none') {
+      assignSmartMotionToClips(clips, assetMap, matrix.defaultMotionStrategy, idx);
+    }
 
     const chosenVo =
       validVoiceovers.length > 0 ? validVoiceovers[idx % validVoiceovers.length] : null;

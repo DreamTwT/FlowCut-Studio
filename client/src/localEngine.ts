@@ -1,5 +1,6 @@
 import {
   AspectRatio,
+  assignSmartMotionToClips,
   buildSyncedSubtitlesFromScript,
   createDefaultSubtitleConfig,
   ExportQuality,
@@ -795,6 +796,9 @@ export function generateMatrixGroupsLocal(
         cIdx === combo.length - 1 ? 'none' : matrix.defaultTransition
       )
     );
+    if (matrix.defaultMotionStrategy && matrix.defaultMotionStrategy !== 'none') {
+      assignSmartMotionToClips(clips, assetMap, matrix.defaultMotionStrategy, idx);
+    }
     return {
       id: uid(),
       name: `矩阵成片 #${seq} (${first ? first.name.slice(0, 8) : '混剪'})`,

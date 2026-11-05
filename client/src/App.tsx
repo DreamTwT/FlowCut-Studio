@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import {
   alignGroupDurationToVoiceover,
+  assignSmartMotionToClips,
   applyBeatsToGroupClips,
   BeatDensityMode,
   BeatSyncStrategy,
@@ -659,6 +660,16 @@ export const App: React.FC = () => {
           return d;
         })
       }
+      onSmartMotionGroup={(groupId, strategy, applyAll) => {
+        updateProject((d) => {
+          const assets = new Map(d.assets.map((a) => [a.id, a]));
+          d.videoGroups.forEach((g, i) => {
+            if (applyAll || g.id === groupId) assignSmartMotionToClips(g.clips, assets, strategy, applyAll ? i : 0);
+          });
+          return d;
+        });
+        showToast(applyAll ? '✓ 已为全部成片组智能编排运镜' : '✓ 已为本组智能编排运镜');
+      }}
       onApplyTransitionToGroup={(groupId, transition: TransitionType) => {
         updateProject((d) => {
           const g = d.videoGroups.find((x) => x.id === groupId);
@@ -819,6 +830,7 @@ export const App: React.FC = () => {
             g.voiceoverVolume = src.voiceoverVolume;
             g.voiceoverDelaySec = src.voiceoverDelaySec;
             g.voiceoverSpeed = src.voiceoverSpeed;
+            g.sfx = src.sfx ? structuredClone(src.sfx) : undefined;
             g.clipMasterVolume = src.clipMasterVolume;
             g.audioFadeOut = src.audioFadeOut;
           }

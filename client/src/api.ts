@@ -6,6 +6,7 @@ import {
   BeatDensityMode,
   BreathRemovalOptions,
   buildSyncedSubtitlesFromScript,
+  CoverExportMode,
   createDefaultAiSettings,
   DetectedSceneSegment,
   ExportQuality,
@@ -321,10 +322,18 @@ export async function startBatchRenderApi(
     crf?: 20 | 23;
     videoEncoder?: VideoEncoderId;
     concurrency?: 1 | 2 | 3 | 4;
+    exportCoverMode?: CoverExportMode;
     filenamePattern?: string;
   }
 ): Promise<RenderBatchJob> {
   if (isStandaloneBrowserMode) {
+    const targetGroups = project.videoGroups.filter((g) =>
+      options.groupIds?.length ? options.groupIds.includes(g.id) : g.selectedForExport
+    );
+    if ((options.exportCoverMode || project.exportCoverMode || 'none') !== 'none' ||
+        targetGroups.some((g) => g.sfx?.enabled || g.clips.some((c) => c.motion && c.motion !== 'none'))) {
+      throw new Error('浏览器独立预览模式暂不支持运镜、音效或封面导出；请启动桌面版或本地服务后导出。');
+    }
     return startLocalBatchRender(project, options);
   }
 

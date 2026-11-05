@@ -1,10 +1,10 @@
 {
   "name": "flowcut-studio",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
-  "description": "FlowCut Pro v2.3.0 - Smart Scene Split, Beat-Sync, AI Script & Dual-Mode ASR Studio",
+  "description": "FlowCut Pro v2.4.0 - Dynamic Camera Motion, Viral SFX & Synchronized Cover Export",
   "author": "FlowCut Studio",
   "config": {
     "electron_mirror": "https://cdn.npmmirror.com/binaries/electron/",

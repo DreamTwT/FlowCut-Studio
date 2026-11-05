@@ -10,6 +10,28 @@ export type FitMode = 'cover' | 'blur' | 'contain';
 
 export type TransitionType = 'none' | 'fade' | 'wipeleft' | 'smoothup' | 'circleopen';
 
+export type MotionPresetId =
+  | 'none'
+  | 'hook_punch'
+  | 'zoom_in'
+  | 'zoom_out'
+  | 'pan_right'
+  | 'pan_left'
+  | 'tilt_up';
+
+export type MotionMatrixStrategy = 'none' | 'smart_alternating' | 'images_only';
+
+export type SfxPresetId =
+  | 'none'
+  | 'whoosh_hook'
+  | 'impact_boom'
+  | 'pop_bubble'
+  | 'ding_shine'
+  | 'cash_register'
+  | 'camera_shutter';
+
+export type CoverExportMode = 'none' | 'first_highlight' | 'golden_3s' | 'middle_frame';
+
 export type VideoEncoderId =
   | 'auto'
   | 'h264_nvenc'
@@ -227,6 +249,7 @@ export interface TimelineClip {
   crop: CropBox;
   fitMode: FitMode;
   transition: TransitionType;
+  motion?: MotionPresetId;
   note?: string;
 }
 
@@ -353,6 +376,17 @@ export const DEDUP_PRESETS: Record<
   },
 };
 
+export interface GroupSfxConfig {
+  enabled: boolean;
+  volume: number; // 0.1 ~ 1.5, default 0.65
+  /** Triggered at t=0.04s on the opening hook shot */
+  hookSfxId: SfxPresetId;
+  /** Triggered automatically on every clip cut / transition boundary */
+  transitionSfxId: SfxPresetId;
+  /** Triggered when the final CTA clip starts */
+  ctaSfxId: SfxPresetId;
+}
+
 export interface VideoGroup {
   id: string;
   name: string;
@@ -362,6 +396,7 @@ export interface VideoGroup {
   subtitles?: SubtitleConfig;
   watermark?: WatermarkConfig;
   dedup?: DedupConfig;
+  sfx?: GroupSfxConfig;
 
   // BGM Music Track & Clip Controls
   bgmAssetId: string | null;
@@ -409,6 +444,7 @@ export interface MatrixConfig {
   protectPackagingText?: boolean;
   defaultTransition: TransitionType;
   defaultFitMode: FitMode;
+  defaultMotionStrategy?: MotionMatrixStrategy;
   strategy: 'balanced_limit' | 'all_cartesian';
   targetCount: number;
   appendMode: 'append' | 'replace';
@@ -424,6 +460,7 @@ export interface ProjectData {
   exportCrf: 20 | 23;
   videoEncoder?: VideoEncoderId;
   renderConcurrency?: 1 | 2 | 3 | 4;
+  exportCoverMode?: CoverExportMode;
   filenamePattern: string; // e.g. "{project}_{index}_{group}"
   assets: MediaAsset[];
   videoGroups: VideoGroup[];
@@ -438,6 +475,9 @@ export interface RenderItemStatus {
   status: 'queued' | 'rendering' | 'done' | 'error' | 'cancelled';
   progress: number; // 0 ~ 100
   outputUrl?: string;
+  coverFilename?: string;
+  coverUrl?: string;
+  coverError?: string;
   fileSizeBytes?: number;
   durationSec?: number;
   encoderUsed?: string;
@@ -457,6 +497,7 @@ export interface RenderBatchJob {
   encoderRequested?: VideoEncoderId;
   encoderResolved?: string;
   concurrency?: number;
+  exportCoverMode?: CoverExportMode;
   createdAt: string;
   status: 'running' | 'completed' | 'cancelled' | 'partial_error';
   items: RenderItemStatus[];
@@ -1459,4 +1500,179 @@ export function applyBeatsToGroupClips(
   };
 }
 
+// ============================================================================
+// v2.4 Dynamic Camera Motion Presets, Viral SFX Pack & Cover Frame Export
+// ============================================================================
 
+export const MOTION_MATRIX_STRATEGIES: { id: MotionMatrixStrategy; label: string }[] = [
+  { id: 'none', label: '固定原画' },
+  { id: 'smart_alternating', label: '智能交替运镜' },
+  { id: 'images_only', label: '仅静图运镜' },
+];
+
+export const MOTION_PRESET_LABELS: Record<
+  MotionPresetId,
+  { label: string; badge: string; desc: string }
+> = {
+  none: {
+    label: '无运镜 (固定原画)',
+    badge: '默认',
+    desc: '保持原始固定画面构图，不叠加动态推拉位移',
+  },
+  hook_punch: {
+    label: '🔥 冲击放大 (前3秒钩子)',
+    badge: '爆款开头',
+    desc: '开场 0.35s 凌厉急缩定焦再微推，瞬间抓住用户滑动视线',
+  },
+  zoom_in: {
+    label: '🔍 缓慢推进特写',
+    badge: '突出细节',
+    desc: '从 100% 平滑推进至 116%，适合产品材质细节与核心卖点展示',
+  },
+  zoom_out: {
+    label: '🖼️ 平滑拉远全景',
+    badge: '空间全貌',
+    desc: '从 116% 平滑拉远回到 100%，适合门店全景、礼盒全貌与结局揭晓',
+  },
+  pan_right: {
+    label: '➡️ 水平向右巡航',
+    badge: '拯救静图',
+    desc: '微放大后从左向右丝滑平移，让静态商品图秒变实拍滑轨感',
+  },
+  pan_left: {
+    label: '⬅️ 水平向左巡航',
+    badge: '滑轨质感',
+    desc: '微放大后从右向左丝滑平移，适合与上一镜头形成错落节奏',
+  },
+  tilt_up: {
+    label: '⬆️ 纵向全身巡礼',
+    badge: '穿搭/瓶身',
+    desc: '自下而上平滑巡览，极适合护肤瓶身、全身穿搭与菜品特写',
+  },
+};
+
+export function assignSmartMotionToClips(
+  clips: TimelineClip[],
+  assetMap: Map<string, MediaAsset>,
+  strategy: MotionMatrixStrategy = 'smart_alternating',
+  variantSeed = 0
+): void {
+  const cycle: MotionPresetId[] = [
+    'zoom_in',
+    'pan_right',
+    'zoom_out',
+    'pan_left',
+    'tilt_up',
+  ];
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i];
+    const asset = assetMap.get(clip.assetId);
+    if (strategy === 'none') {
+      clip.motion = 'none';
+      continue;
+    }
+    if (strategy === 'images_only') {
+      if (asset?.type === 'image') {
+        clip.motion = i === 0 ? 'hook_punch' : cycle[(i + variantSeed) % cycle.length];
+      } else {
+        clip.motion = 'none';
+      }
+      continue;
+    }
+    // 'smart_alternating': Shot 0 gets viral hook_punch; subsequent shots alternate smoothly
+    if (i === 0) {
+      clip.motion = 'hook_punch';
+    } else {
+      clip.motion = cycle[(i - 1 + variantSeed) % cycle.length];
+    }
+  }
+}
+
+export interface SfxPresetMeta {
+  id: Exclude<SfxPresetId, 'none'>;
+  name: string;
+  badge: string;
+  durationSec: number;
+  desc: string;
+}
+
+export const SFX_PRESETS: Record<Exclude<SfxPresetId, 'none'>, SfxPresetMeta> = {
+  whoosh_hook: {
+    id: 'whoosh_hook',
+    name: '🔥 破风呼啸 (Whoosh)',
+    badge: '万能转场',
+    durationSec: 0.42,
+    desc: '干净利落的空气破风声，适合开场切入与分镜快切转场',
+  },
+  impact_boom: {
+    id: 'impact_boom',
+    name: '💥 重低音暴击 (Boom)',
+    badge: '前3秒震屏',
+    durationSec: 0.62,
+    desc: '影院级低频下潜冲击音，放在第0秒痛点钩子瞬间拉满紧张感',
+  },
+  pop_bubble: {
+    id: 'pop_bubble',
+    name: '🫧 综艺清脆气泡 (Pop)',
+    badge: '种草网感',
+    durationSec: 0.2,
+    desc: '轻快灵动的啵啵气泡音，适合美妆日百、探店种草镜头切换',
+  },
+  ding_shine: {
+    id: 'ding_shine',
+    name: '✨ 卖点高光叮声 (Ding)',
+    badge: '卖点强调',
+    durationSec: 0.65,
+    desc: '清澈通透的高频金属泛音，适合核心黑科技或前后对比揭晓',
+  },
+  cash_register: {
+    id: 'cash_register',
+    name: '💰 福利收银金币 (Cash)',
+    badge: '转化逼单',
+    durationSec: 0.54,
+    desc: '经典双音清脆金币声，放在结尾“买1送1/立减”促销镜头转化率飙升',
+  },
+  camera_shutter: {
+    id: 'camera_shutter',
+    name: '📸 机械单反快门 (Shutter)',
+    badge: '定格实测',
+    durationSec: 0.24,
+    desc: '干脆的快门咔嚓声，适合多角度产品细节连拍卡点',
+  },
+};
+
+export function createDefaultSfxConfig(): GroupSfxConfig {
+  return {
+    enabled: false,
+    volume: 0.65,
+    hookSfxId: 'impact_boom',
+    transitionSfxId: 'whoosh_hook',
+    ctaSfxId: 'cash_register',
+  };
+}
+
+export const COVER_EXPORT_MODES: Record<
+  CoverExportMode,
+  { label: string; badge: string; desc: string }
+> = {
+  none: {
+    label: '仅导出 MP4 成片 (不生成封面图)',
+    badge: '默认',
+    desc: '仅输出视频文件',
+  },
+  first_highlight: {
+    label: '🖼️ 同步导出高清首帧包装封面 (.jpg)',
+    badge: '千川推荐',
+    desc: '自动截取开场 0.35s 含上下吸睛花字与角标的高清 JPG 封面，直接配套上传千川/视频号',
+  },
+  golden_3s: {
+    label: '🔥 同步导出黄金第2秒高光封面 (.jpg)',
+    badge: '带首句字幕',
+    desc: '截取第 1.8s 含花字 + 首句动态口播字幕 + 核心产品画面的高点击封面',
+  },
+  middle_frame: {
+    label: '💎 同步导出成片中段卖点封面 (.jpg)',
+    badge: '实测特写',
+    desc: '截取成片 50% 处的实测卖点画面与花字包装作为封面图',
+  },
+};

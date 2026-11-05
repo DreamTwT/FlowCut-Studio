@@ -15,6 +15,8 @@ import {
   FitMode,
   MatrixConfig,
   MediaAsset,
+  MOTION_MATRIX_STRATEGIES,
+  MotionMatrixStrategy,
   TITLE_STYLES,
   TitleStyleId,
   TRANSITION_LABELS,
@@ -405,7 +407,7 @@ export const MatrixMixerView: React.FC<Props> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div>
             <label className="block text-[10px] text-[#8A90A2] mb-1">默认花字风格</label>
             <CustomSelect
@@ -456,6 +458,23 @@ export const MatrixMixerView: React.FC<Props> = ({
                 onUpdateMatrix({ ...matrix, defaultFitMode: val as FitMode })
               }
               menuMinWidth={165}
+              className="w-full"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[10px] text-[#00E5FF] mb-1">默认动态运镜</label>
+            <CustomSelect<MotionMatrixStrategy>
+              size="sm"
+              value={matrix.defaultMotionStrategy || 'none'}
+              options={MOTION_MATRIX_STRATEGIES.map((m) => ({
+                value: m.id,
+                label: m.label,
+              }))}
+              onChange={(val) =>
+                onUpdateMatrix({ ...matrix, defaultMotionStrategy: val })
+              }
+              menuMinWidth={195}
               className="w-full"
             />
           </div>

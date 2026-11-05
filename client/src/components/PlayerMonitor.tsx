@@ -23,6 +23,7 @@ import {
 import { CroppedMediaFrame } from './CroppedMediaFrame';
 import { OverlayPreviewLayer } from './OverlayPreviewLayer';
 import { formatDuration, formatShortSec } from '../utils/format';
+import { playBuiltinSfxPreview } from '../utils/motionAndSfx';
 
 export type MonitorMode = 'program' | 'source';
 
@@ -72,6 +73,8 @@ export const PlayerMonitor: React.FC<Props> = ({
   const voAudioRef = useRef<HTMLAudioElement | null>(null);
   const srcMediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const stageHostRef = useRef<HTMLDivElement | null>(null);
+  const lastSfxKeyRef = useRef<string>('');
+  const lastSingleCtaKeyRef = useRef<string>('');
   const [stageBounds, setStageBounds] = useState<{ w: number; h: number }>({ w: 360, h: 640 });
 
   // Measure available stage container with ResizeObserver so 9:16, 16:9, 1:1 ALWAYS maximize cleanly without overflow!
@@ -240,6 +243,20 @@ export const PlayerMonitor: React.FC<Props> = ({
 
       if (isPlaying) {
         v.play().catch(() => setIsPlaying(false));
+        // Smooth 60fps progress updates when dynamic camera motion is active on video clips
+        if (clip.motion && clip.motion !== 'none') {
+          let rafId = 0;
+          const t0 = clip.trimStart || 0;
+          const tickVideoMotion = () => {
+            if (progVideoRef.current && !progVideoRef.current.paused) {
+              const elapsed = Math.max(0, (progVideoRef.current.currentTime - t0) / spd);
+              setProgClipElapsed(elapsed);
+            }
+            rafId = requestAnimationFrame(tickVideoMotion);
+          };
+          rafId = requestAnimationFrame(tickVideoMotion);
+          return () => cancelAnimationFrame(rafId);
+        }
       } else {
         v.pause();
       }
@@ -271,9 +288,59 @@ export const PlayerMonitor: React.FC<Props> = ({
     currentEntry?.clip.speed,
     currentEntry?.clip.muted,
     currentEntry?.clip.volume,
+    currentEntry?.clip.motion,
     activeGroup?.clipMasterVolume,
     isPlaying,
     previewMuted,
+  ]);
+
+  // Real-time Viral SFX playback during Program Monitor preview
+  useEffect(() => {
+    if (mode !== 'program' || !isPlaying || previewMuted || !activeGroup?.sfx?.enabled) {
+      if (!isPlaying && progClipIdx === 0 && progClipElapsed < 0.05) {
+        lastSfxKeyRef.current = '';
+        lastSingleCtaKeyRef.current = '';
+      }
+      return;
+    }
+    const sfx = activeGroup.sfx;
+    const vol = Math.min(1, Math.max(0, sfx.volume ?? 0.65));
+    if (vol <= 0.01 || playableClips.length === 0) return;
+
+    const key = `${activeGroup.id}_${progClipIdx}`;
+    if (playableClips.length === 1 && currentEntry && currentEntry.effDur >= 2 &&
+        progClipElapsed >= Math.max(0.5, currentEntry.effDur - 1.4) &&
+        lastSingleCtaKeyRef.current !== key) {
+      lastSingleCtaKeyRef.current = key;
+      playBuiltinSfxPreview(sfx.ctaSfxId, vol);
+    }
+    if (lastSfxKeyRef.current === key) return;
+
+    if (progClipIdx === 0) {
+      if (progClipElapsed < 0.28 && sfx.hookSfxId && sfx.hookSfxId !== 'none') {
+        lastSfxKeyRef.current = key;
+        playBuiltinSfxPreview(sfx.hookSfxId, vol);
+      }
+      return;
+    }
+
+    lastSfxKeyRef.current = key;
+    const isLast = progClipIdx === playableClips.length - 1;
+    if (isLast && sfx.ctaSfxId && sfx.ctaSfxId !== 'none') {
+      playBuiltinSfxPreview(sfx.ctaSfxId, vol);
+    } else if (sfx.transitionSfxId && sfx.transitionSfxId !== 'none') {
+      playBuiltinSfxPreview(sfx.transitionSfxId, vol * 0.88);
+    }
+  }, [
+    mode,
+    isPlaying,
+    previewMuted,
+    progClipIdx,
+    progClipElapsed,
+    currentEntry?.effDur,
+    activeGroup?.id,
+    activeGroup?.sfx,
+    playableClips.length,
   ]);
 
   const handleProgramVideoTimeUpdate = () => {
@@ -558,6 +625,9 @@ export const PlayerMonitor: React.FC<Props> = ({
                   crop={currentEntry.clip.crop}
                   fitMode={currentEntry.clip.fitMode}
                   aspectRatio={aspectRatio}
+                  motion={currentEntry.clip.motion}
+                  clipElapsedSec={progClipElapsed}
+                  clipDurationSec={currentEntry.effDur}
                   videoRef={progVideoRef}
                   muted={previewMuted || currentEntry.clip.muted}
                   onTimeUpdate={handleProgramVideoTimeUpdate}
