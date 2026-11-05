@@ -7,6 +7,10 @@ import {
   Loader2,
 } from 'lucide-react';
 import {
+  alignGroupDurationToVoiceover,
+  applyBeatsToGroupClips,
+  BeatDensityMode,
+  BeatSyncStrategy,
   buildSyncedSubtitlesFromScript,
   createDefaultDedupConfig,
   createDefaultSubtitleConfig,
@@ -14,6 +18,7 @@ import {
   DEDUP_PRESETS,
   DedupConfig,
   DedupPresetId,
+  DurationAlignMode,
   FULL_CROP,
   generateDedupVariant,
   GroupOverlayConfig,
@@ -32,6 +37,7 @@ import {
   createNewProject,
   deleteAssetApi,
   deleteProjectApi,
+  detectAudioBeatsApi,
   fetchAiSettingsApi,
   fetchBootstrap,
   fetchHardwareReportApi,
@@ -56,6 +62,7 @@ import { TrimCropModal, TrimCropResult } from './components/TrimCropModal';
 import { BatchExportModal } from './components/BatchExportModal';
 import { AiStudioInitialTab, TtsStudioModal } from './components/TtsStudioModal';
 import { AudioEditorModal, NonDestructiveAudioSave } from './components/AudioEditorModal';
+import { SmartSceneSplitModal } from './components/SmartSceneSplitModal';
 import { uid } from './utils/format';
 
 function makeClip(asset: MediaAsset): TimelineClip {
@@ -119,6 +126,11 @@ export const App: React.FC = () => {
     text: string;
     pct: number;
   } | null>(null);
+  const [sceneSplitAsset, setSceneSplitAsset] = useState<MediaAsset | null>(null);
+  const [beatSyncBusy, setBeatSyncBusy] = useState<boolean>(false);
+  const [lastBeatInfo, setLastBeatInfo] = useState<{ bpm: number; beatCount: number } | null>(
+    null
+  );
   const [audioEditorAsset, setAudioEditorAsset] = useState<MediaAsset | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
@@ -516,6 +528,7 @@ export const App: React.FC = () => {
         setMonitorMode('source');
       }}
       onTrimAsset={(asset) => setTrimModalState({ kind: 'asset', asset })}
+      onSmartSplitVideo={(asset) => setSceneSplitAsset(asset)}
       onEditAudio={(asset) => setAudioEditorAsset(asset)}
       onQuickRemoveBreath={async (asset) => {
         showToast(`⚡ 正在对「${asset.name}」执行智能去气口分析...`);
@@ -621,6 +634,7 @@ export const App: React.FC = () => {
       showSafeZone={showSafeZone}
       onToggleSafeZone={() => setShowSafeZone((v) => !v)}
       onOpenTrimAsset={(asset) => setTrimModalState({ kind: 'asset', asset })}
+      onSmartSplitVideo={(asset) => setSceneSplitAsset(asset)}
       onOpenEditAudio={(asset) => setAudioEditorAsset(asset)}
       onOpenTrimClip={(group, clip) => {
         const a = assetMap.get(clip.assetId);
@@ -908,6 +922,101 @@ export const App: React.FC = () => {
             }
           } finally {
             setAsrState(null);
+          }
+        })();
+      }}
+      onAlignGroupDuration={(groupId, mode: DurationAlignMode, applyAll: boolean) => {
+        let countAligned = 0;
+        let singleNote = '';
+        updateProject((d) => {
+          const map = new Map(d.assets.map((a) => [a.id, a]));
+          const targets = applyAll
+            ? d.videoGroups
+            : d.videoGroups.filter((g) => g.id === groupId);
+          for (const g of targets) {
+            const r = alignGroupDurationToVoiceover(g, map, mode);
+            if (r.changed) {
+              countAligned++;
+              singleNote = r.note;
+            }
+          }
+          return d;
+        });
+        setMonitorMode('program');
+        if (applyAll) {
+          showToast(
+            countAligned > 0
+              ? `⚖️ 已自动将 ${countAligned} 条视频组的画面与口播时长精准对齐！`
+              : '✓ 所有带配音的视频组音画时长均已对齐'
+          );
+        } else {
+          showToast(`⚖️ ${singleNote || '当前组音画时长已精准对齐'}`);
+        }
+      }}
+      beatSyncBusy={beatSyncBusy}
+      lastBeatInfo={lastBeatInfo}
+      onBeatSyncGroup={(
+        groupId,
+        density: BeatDensityMode,
+        strategy: BeatSyncStrategy,
+        applyAll: boolean
+      ) => {
+        void (async () => {
+          if (!project) return;
+          const refGroup =
+            project.videoGroups.find((g) => g.id === groupId) || activeGroup;
+          if (!refGroup?.bgmAssetId) {
+            alert('请先为视频组选择一条背景音乐 (BGM)');
+            return;
+          }
+          setBeatSyncBusy(true);
+          try {
+            const bgmAsset = assetMap.get(refGroup.bgmAssetId);
+            const beatsRes = await detectAudioBeatsApi(project, refGroup.bgmAssetId, {
+              trimStart: refGroup.bgmTrimStart ?? bgmAsset?.defaultTrimStart ?? 0,
+              trimEnd:
+                refGroup.bgmTrimEnd || bgmAsset?.defaultTrimEnd || bgmAsset?.duration,
+              speed: refGroup.bgmSpeed || bgmAsset?.defaultSpeed || 1.0,
+              density,
+            });
+            setLastBeatInfo({
+              bpm: beatsRes.estimatedBpm,
+              beatCount: beatsRes.beatsSec.length,
+            });
+
+            let syncedGroups = 0;
+            let syncedClips = 0;
+            updateProject((d) => {
+              const map = new Map(d.assets.map((a) => [a.id, a]));
+              const targets = applyAll
+                ? d.videoGroups
+                : d.videoGroups.filter((g) => g.id === groupId);
+              for (const g of targets) {
+                if (g.clips.length === 0) continue;
+                if (applyAll && !g.bgmAssetId) {
+                  g.bgmAssetId = refGroup.bgmAssetId;
+                  g.bgmTrimStart = refGroup.bgmTrimStart;
+                  g.bgmTrimEnd = refGroup.bgmTrimEnd;
+                  g.bgmSpeed = refGroup.bgmSpeed;
+                }
+                const r = applyBeatsToGroupClips(g, map, beatsRes.beatsSec, strategy);
+                if (r.alignedClips > 0) {
+                  syncedGroups++;
+                  syncedClips += r.alignedClips;
+                }
+              }
+              return d;
+            });
+            setMonitorMode('program');
+            showToast(
+              applyAll
+                ? `🎵 鼓点卡点完成（约 ${beatsRes.estimatedBpm} BPM）：已将 ${syncedGroups} 组共 ${syncedClips} 个镜头精准踩上音乐节拍！`
+                : `🎵 本组鼓点卡点完成（约 ${beatsRes.estimatedBpm} BPM）：全部镜头切换已精准踩上节拍！`
+            );
+          } catch (err: any) {
+            alert(err?.message || '音乐鼓点识别卡点失败');
+          } finally {
+            setBeatSyncBusy(false);
           }
         })();
       }}
@@ -1199,6 +1308,38 @@ export const App: React.FC = () => {
             onQuickExportSingleGroup={(gid) =>
               setExportModalState({ open: true, specificGroupIds: [gid] })
             }
+            onAutoAlignGroupDuration={(gid) => {
+              let note = '';
+              updateProject((d) => {
+                const map = new Map(d.assets.map((a) => [a.id, a]));
+                const g = d.videoGroups.find((x) => x.id === gid);
+                if (g) {
+                  const r = alignGroupDurationToVoiceover(g, map, 'hybrid_smart');
+                  note = r.note;
+                }
+                return d;
+              });
+              setActiveGroupId(gid);
+              setMonitorMode('program');
+              showToast(`⚖️ ${note || '该组音画时长已自动对齐'}`);
+            }}
+            onBatchAlignAllGroupsDuration={() => {
+              let count = 0;
+              updateProject((d) => {
+                const map = new Map(d.assets.map((a) => [a.id, a]));
+                for (const g of d.videoGroups) {
+                  const r = alignGroupDurationToVoiceover(g, map, 'hybrid_smart');
+                  if (r.changed) count++;
+                }
+                return d;
+              });
+              setMonitorMode('program');
+              showToast(
+                count > 0
+                  ? `⚖️ 已一键对齐全部 ${count} 条配音视频组的音画时长！`
+                  : '✓ 全部视频组音画时长均已对齐'
+              );
+            }}
           />
         ) : (
           <MatrixMixerView
@@ -1542,6 +1683,30 @@ export const App: React.FC = () => {
             setAudioEditorAsset(updatedAsset);
             setSelectedSourceId(updatedAsset.id);
             showToast(msg);
+          }}
+        />
+      )}
+
+      {/* Smart Long-Video Scene Detection & Zero-Copy Split Workbench Modal */}
+      {sceneSplitAsset && (
+        <SmartSceneSplitModal
+          project={project}
+          asset={sceneSplitAsset}
+          activeGroup={activeGroup}
+          onClose={() => setSceneSplitAsset(null)}
+          onSplitCommitted={(updatedProject, createdAssets, dispatchMode, toastMsg) => {
+            setUndoStack((u) => [...u.slice(-24), structuredClone(project)]);
+            setProject(updatedProject);
+            if (createdAssets[0]) {
+              setSelectedSourceId(createdAssets[0].id);
+            }
+            if (dispatchMode === 'matrix_slots_by_tag') {
+              setBottomTab('matrix');
+            } else if (dispatchMode === 'active_group') {
+              setBottomTab('groups');
+              setMonitorMode('program');
+            }
+            showToast(toastMsg);
           }}
         />
       )}

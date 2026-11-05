@@ -19,7 +19,11 @@ import {
   MediaAsset,
   ProjectData,
 } from '@shared/schema';
-import { removeAudioBreathApi, renderEditedAudioApi } from '../api';
+import {
+  detectAudioBeatsApi,
+  removeAudioBreathApi,
+  renderEditedAudioApi,
+} from '../api';
 import { decodeWaveformFromUrl, WaveformData } from '../utils/audioWaveform';
 import { formatDuration as formatTime } from '../utils/format';
 
@@ -70,6 +74,9 @@ export const AudioEditorModal: React.FC<Props> = ({
   const [processingBreath, setProcessingBreath] = useState(false);
   const [renderingCopy, setRenderingCopy] = useState(false);
   const [lastBreathBanner, setLastBreathBanner] = useState<string | null>(null);
+  const [beatPointsSec, setBeatPointsSec] = useState<number[]>([]);
+  const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
+  const [probingBeats, setProbingBeats] = useState<boolean>(false);
 
   // Waveform & playback state
   const [waveform, setWaveform] = useState<WaveformData | null>(null);
@@ -411,6 +418,20 @@ export const AudioEditorModal: React.FC<Props> = ({
                 className="absolute inset-y-0 border-y-2 border-[#FFB800] pointer-events-none"
               />
 
+              {/* Golden Beat Markers on Waveform */}
+              {beatPointsSec.map((bRel, bi) => {
+                const absSec = trimStart + bRel * speed;
+                if (absSec <= trimStart + 0.05 || absSec >= trimEnd - 0.05) return null;
+                const pct = (absSec / Math.max(0.1, dur)) * 100;
+                return (
+                  <div
+                    key={bi}
+                    style={{ left: `${pct}%` }}
+                    className="absolute inset-y-1 w-[1.5px] bg-[#FFB800]/85 shadow-[0_0_6px_rgba(255,184,0,0.8)] pointer-events-none"
+                  />
+                );
+              })}
+
               {/* Left Handle [ */}
               <div
                 style={{ left: `${startPct}%` }}
@@ -491,15 +512,53 @@ export const AudioEditorModal: React.FC<Props> = ({
                 </button>
               </div>
 
-              <label className="flex items-center gap-1.5 text-[11px] text-rose-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={previewBreathOverlay}
-                  onChange={(e) => setPreviewBreathOverlay(e.target.checked)}
-                  className="accent-rose-500"
-                />
-                在声波图上红色标示可切除的气口/低音量停顿
-              </label>
+              <div className="flex items-center gap-3 flex-wrap">
+                {audioRole === 'bgm' && (
+                  <button
+                    type="button"
+                    disabled={probingBeats}
+                    onClick={async () => {
+                      setProbingBeats(true);
+                      try {
+                        const res = await detectAudioBeatsApi(project, currentAsset.id, {
+                          trimStart,
+                          trimEnd,
+                          speed,
+                          density: 'dense',
+                        });
+                        setBeatPointsSec(res.beatsSec);
+                        setDetectedBpm(res.estimatedBpm);
+                      } catch (err: any) {
+                        alert(err?.message || '鼓点探测失败');
+                      } finally {
+                        setProbingBeats(false);
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-[#FFB800]/18 hover:bg-[#FFB800] border border-[#FFB800]/45 text-[#FFB800] hover:text-[#111318] text-[11px] font-bold flex items-center gap-1 whitespace-nowrap transition"
+                  >
+                    {probingBeats ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Music className="w-3 h-3" />
+                    )}
+                    <span>
+                      {detectedBpm
+                        ? `约 ${detectedBpm} BPM · 已标 ${beatPointsSec.length} 拍`
+                        : '探测并标出音乐鼓点'}
+                    </span>
+                  </button>
+                )}
+
+                <label className="flex items-center gap-1.5 text-[11px] text-rose-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={previewBreathOverlay}
+                    onChange={(e) => setPreviewBreathOverlay(e.target.checked)}
+                    className="accent-rose-500"
+                  />
+                  在声波图上红色标示可切除的气口/低音量停顿
+                </label>
+              </div>
             </div>
           </div>
 

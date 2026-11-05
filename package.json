@@ -1,10 +1,10 @@
 {
   "name": "flowcut-studio",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
-  "description": "FlowCut Pro v2.2.0 - AI Script Fission, Dual-Mode ASR & Short-Video Batch Mixing Studio",
+  "description": "FlowCut Pro v2.3.0 - Smart Scene Split, Beat-Sync, AI Script & Dual-Mode ASR Studio",
   "author": "FlowCut Studio",
   "config": {
     "electron_mirror": "https://cdn.npmmirror.com/binaries/electron/",

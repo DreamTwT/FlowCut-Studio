@@ -26,6 +26,11 @@ import {
   serveCachedHfModelFile,
   transcribeGroupViaCloudAsr,
 } from './asrService.js';
+import {
+  commitSceneSplitToProject,
+  detectAudioBeats,
+  detectVideoScenes,
+} from './smartSplitBeatService.js';
 import { decodeUploadFilename, probeAndProcessFile } from './mediaService.js';
 import {
   BreathRemovalResult,
@@ -208,6 +213,89 @@ app.post('/api/projects/:id/groups/:groupId/asr/prepare-local', async (req, res)
 
 app.use('/api/asr/hf-model', (req, res) => {
   void serveCachedHfModelFile(req.path, res);
+});
+
+// ============================================================================
+// v2.3 Smart Long-Video Scene Split & BGM Beat-Sync Endpoints
+// ============================================================================
+
+app.post('/api/projects/:id/assets/:assetId/scene-detect', async (req, res) => {
+  try {
+    let proj = loadProject(req.params.id);
+    if (req.body?.project) {
+      proj = saveProject(req.body.project as ProjectData);
+    }
+    if (!proj) {
+      res.status(404).json({ error: '找不到目标项目' });
+      return;
+    }
+    const asset = proj.assets.find((a) => a.id === req.params.assetId);
+    if (!asset) {
+      res.status(404).json({ error: '找不到目标视频素材' });
+      return;
+    }
+    const result = await detectVideoScenes(asset, {
+      mode: req.body?.mode || 'smart_scdet',
+      sensitivity: req.body?.sensitivity || 'standard',
+      minShotSec: req.body?.minShotSec ?? 1.5,
+      fixedIntervalSec: req.body?.fixedIntervalSec ?? 3.0,
+    });
+    res.json(result);
+  } catch (err: any) {
+    console.error('[SceneDetect Error]', err);
+    res.status(500).json({ error: err?.message || '智能镜头切点扫描失败' });
+  }
+});
+
+app.post('/api/projects/:id/assets/:assetId/scene-split-commit', (req, res) => {
+  try {
+    let proj = loadProject(req.params.id);
+    if (req.body?.project) {
+      proj = saveProject(req.body.project as ProjectData);
+    }
+    if (!proj) {
+      res.status(404).json({ error: '找不到目标项目' });
+      return;
+    }
+    const result = commitSceneSplitToProject(proj, req.params.assetId, {
+      segments: req.body?.segments || [],
+      dispatchMode: req.body?.dispatchMode || 'library_only',
+      targetGroupId: req.body?.targetGroupId,
+      removeOriginalAsset: Boolean(req.body?.removeOriginalAsset),
+    });
+    res.json(result);
+  } catch (err: any) {
+    console.error('[SceneSplitCommit Error]', err);
+    res.status(500).json({ error: err?.message || '保存拆分镜头失败' });
+  }
+});
+
+app.post('/api/projects/:id/assets/:assetId/beats', async (req, res) => {
+  try {
+    let proj = loadProject(req.params.id);
+    if (req.body?.project) {
+      proj = saveProject(req.body.project as ProjectData);
+    }
+    if (!proj) {
+      res.status(404).json({ error: '找不到目标项目' });
+      return;
+    }
+    const asset = proj.assets.find((a) => a.id === req.params.assetId);
+    if (!asset) {
+      res.status(404).json({ error: '找不到目标音乐素材' });
+      return;
+    }
+    const result = await detectAudioBeats(asset, {
+      trimStart: req.body?.trimStart,
+      trimEnd: req.body?.trimEnd,
+      speed: req.body?.speed,
+      density: req.body?.density || 'standard',
+    });
+    res.json(result);
+  } catch (err: any) {
+    console.error('[BeatDetect Error]', err);
+    res.status(500).json({ error: err?.message || '音乐鼓点节拍分析失败' });
+  }
 });
 
 app.post('/api/system/open-exports', async (req, res) => {

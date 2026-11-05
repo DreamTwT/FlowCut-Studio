@@ -26,6 +26,8 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  BeatDensityMode,
+  BeatSyncStrategy,
   buildDedupFromPreset,
   buildSyncedSubtitlesFromScript,
   createDefaultDedupConfig,
@@ -34,6 +36,8 @@ import {
   DEDUP_PRESETS,
   DedupConfig,
   DedupPresetId,
+  DURATION_ALIGN_MODES,
+  DurationAlignMode,
   exportCuesToSrt,
   FIT_MODE_LABELS,
   FitMode,
@@ -89,6 +93,15 @@ interface Props {
     mode: 'cloud' | 'local_wasm',
     sourceTrack: 'auto' | 'voiceover' | 'video_clips'
   ) => void;
+  onAlignGroupDuration?: (groupId: string, mode: DurationAlignMode, applyAll: boolean) => void;
+  beatSyncBusy?: boolean;
+  lastBeatInfo?: { bpm: number; beatCount: number } | null;
+  onBeatSyncGroup?: (
+    groupId: string,
+    density: BeatDensityMode,
+    strategy: BeatSyncStrategy,
+    applyAll: boolean
+  ) => void;
 }
 
 export const InspectorPanel: React.FC<Props> = ({
@@ -115,6 +128,10 @@ export const InspectorPanel: React.FC<Props> = ({
   onOpenTtsStudio,
   asrState = null,
   onRunGroupAsr,
+  onAlignGroupDuration,
+  beatSyncBusy = false,
+  lastBeatInfo = null,
+  onBeatSyncGroup,
 }) => {
   const [tab, setTab] = useState<'clip' | 'overlay' | 'audio' | 'brand_dedup'>('overlay');
   const [textSubTab, setTextSubTab] = useState<'subtitles' | 'stickers'>('subtitles');
@@ -122,6 +139,9 @@ export const InspectorPanel: React.FC<Props> = ({
   const [asrSourceTrack, setAsrSourceTrack] = useState<'auto' | 'voiceover' | 'video_clips'>(
     'auto'
   );
+  const [alignMode, setAlignMode] = useState<DurationAlignMode>('hybrid_smart');
+  const [beatDensity, setBeatDensity] = useState<BeatDensityMode>('standard');
+  const [beatStrategy, setBeatStrategy] = useState<BeatSyncStrategy>('trim_first');
   const [protectTextNoMirror, setProtectTextNoMirror] = useState(true);
   const [batchDedupPreset, setBatchDedupPreset] =
     useState<Exclude<DedupPresetId, 'custom'>>('standard');
@@ -1032,6 +1052,81 @@ export const InspectorPanel: React.FC<Props> = ({
                         />
                       </div>
                     </div>
+
+                    {/* Smart Audio-Video Duration Auto-Align Block */}
+                    {onAlignGroupDuration && activeGroup.clips.length > 0 && (() => {
+                      const vidDur = getGroupTotalDuration(activeGroup);
+                      const voStart =
+                        activeGroup.voiceoverTrimStart ?? activeVoAsset.defaultTrimStart ?? 0;
+                      const voEnd = Math.max(
+                        voStart + 0.1,
+                        activeGroup.voiceoverTrimEnd ||
+                          activeVoAsset.defaultTrimEnd ||
+                          activeVoAsset.duration
+                      );
+                      const voSpd =
+                        activeGroup.voiceoverSpeed || activeVoAsset.defaultSpeed || 1;
+                      const voTotal =
+                        (activeGroup.voiceoverDelaySec || 0) + (voEnd - voStart) / voSpd;
+                      const diff = vidDur - (voTotal + 0.2);
+
+                      return (
+                        <div className="mt-2 pt-2.5 border-t border-[#2D334A] space-y-2">
+                          <div className="flex items-center justify-between gap-1 text-[11px]">
+                            <span className="font-bold text-white flex items-center gap-1">
+                              <Sparkles className="w-3 h-3 text-[#FFB800]" />
+                              音画时长自动对齐
+                            </span>
+                            <span
+                              className={`font-mono text-[10px] ${
+                                Math.abs(diff) > 0.55 ? 'text-rose-300' : 'text-emerald-300'
+                              }`}
+                            >
+                              画面 {vidDur.toFixed(1)}s / 口播 {voTotal.toFixed(1)}s
+                            </span>
+                          </div>
+
+                          <CustomSelect<DurationAlignMode>
+                            size="sm"
+                            accent="amber"
+                            value={alignMode}
+                            options={(Object.keys(DURATION_ALIGN_MODES) as DurationAlignMode[]).map(
+                              (k) => ({
+                                value: k,
+                                label: DURATION_ALIGN_MODES[k].label,
+                                rightMeta: DURATION_ALIGN_MODES[k].badge,
+                                metaTone: k === 'hybrid_smart' ? 'emerald' : 'amber',
+                              })
+                            )}
+                            onChange={(m) => setAlignMode(m)}
+                            menuMinWidth={270}
+                            className="w-full"
+                          />
+
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onAlignGroupDuration(activeGroup.id, alignMode, false)
+                              }
+                              className="h-8 px-2 rounded-lg bg-[#FFB800] text-[#111318] font-bold text-[11px] whitespace-nowrap flex items-center justify-center gap-1 hover:brightness-110 transition"
+                            >
+                              <Zap className="w-3 h-3 shrink-0" />
+                              对齐本组时长
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onAlignGroupDuration(activeGroup.id, alignMode, true)
+                              }
+                              className="h-8 px-2 rounded-lg bg-[#23293E] hover:bg-[#2E3650] border border-[#384262] text-[#FFB800] font-semibold text-[11px] whitespace-nowrap flex items-center justify-center gap-1 transition"
+                            >
+                              全组批量对齐
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -1204,6 +1299,112 @@ export const InspectorPanel: React.FC<Props> = ({
                         智能闪避：有口播人声时自动压低背景乐
                       </label>
                     </div>
+
+                    {/* BGM Drum Beat Auto-Cut Sync Block */}
+                    {onBeatSyncGroup && activeGroup.clips.length > 0 && (
+                      <div className="mt-2 pt-2.5 border-t border-[#2A324B] space-y-2">
+                        <div className="flex items-center justify-between gap-1 text-[11px]">
+                          <span className="font-bold text-[#00E5FF] flex items-center gap-1">
+                            <Music className="w-3 h-3 shrink-0" />
+                            音乐鼓点自动卡点切画面
+                          </span>
+                          {lastBeatInfo && (
+                            <span className="px-1.5 py-0.5 rounded bg-[#00E5FF]/14 text-[#00E5FF] font-mono text-[10px]">
+                              {lastBeatInfo.bpm} BPM · {lastBeatInfo.beatCount}拍
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <CustomSelect<BeatDensityMode>
+                            size="sm"
+                            value={beatDensity}
+                            options={[
+                              {
+                                value: 'dense',
+                                label: '🔥 密集快剪踩点',
+                                rightMeta: '~1.2s/刀',
+                                metaTone: 'amber',
+                              },
+                              {
+                                value: 'standard',
+                                label: '⚡ 标准节拍卡点',
+                                rightMeta: '~2.0s/刀',
+                                metaTone: 'emerald',
+                              },
+                              {
+                                value: 'relaxed',
+                                label: '🌊 舒缓重拍卡点',
+                                rightMeta: '~3.2s/刀',
+                                metaTone: 'cyan',
+                              },
+                            ]}
+                            onChange={(d) => setBeatDensity(d)}
+                            menuMinWidth={210}
+                          />
+
+                          <CustomSelect<BeatSyncStrategy>
+                            size="sm"
+                            value={beatStrategy}
+                            options={[
+                              {
+                                value: 'trim_first',
+                                label: '优先裁剪时长踩点',
+                                rightMeta: '1x自然',
+                                metaTone: 'emerald',
+                              },
+                              {
+                                value: 'speed_fit',
+                                label: '保持动作变速踩点',
+                                rightMeta: '自动变速',
+                                metaTone: 'cyan',
+                              },
+                            ]}
+                            onChange={(s) => setBeatStrategy(s)}
+                            menuMinWidth={210}
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            disabled={beatSyncBusy}
+                            onClick={() =>
+                              onBeatSyncGroup(
+                                activeGroup.id,
+                                beatDensity,
+                                beatStrategy,
+                                false
+                              )
+                            }
+                            className="h-8 px-2 rounded-lg bg-[#00E5FF] text-[#071016] font-bold text-[11px] whitespace-nowrap flex items-center justify-center gap-1 hover:brightness-110 transition disabled:opacity-50"
+                          >
+                            {beatSyncBusy ? (
+                              <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                            ) : (
+                              <Zap className="w-3 h-3 shrink-0" />
+                            )}
+                            本组按鼓点卡点
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={beatSyncBusy}
+                            onClick={() =>
+                              onBeatSyncGroup(
+                                activeGroup.id,
+                                beatDensity,
+                                beatStrategy,
+                                true
+                              )
+                            }
+                            className="h-8 px-2 rounded-lg bg-[#21273B] hover:bg-[#2C344F] border border-[#35405E] text-[#00E5FF] font-semibold text-[11px] whitespace-nowrap flex items-center justify-center gap-1 transition disabled:opacity-50"
+                          >
+                            全部组批量卡点
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

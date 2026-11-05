@@ -37,6 +37,7 @@ interface Props {
   showSafeZone: boolean;
   onToggleSafeZone: () => void;
   onOpenTrimAsset: (asset: MediaAsset) => void;
+  onSmartSplitVideo?: (asset: MediaAsset) => void;
   onOpenEditAudio?: (asset: MediaAsset) => void;
   onOpenTrimClip: (group: VideoGroup, clip: TimelineClip) => void;
   onSelectClip: (clipId: string) => void;
@@ -53,6 +54,7 @@ export const PlayerMonitor: React.FC<Props> = ({
   showSafeZone,
   onToggleSafeZone,
   onOpenTrimAsset,
+  onSmartSplitVideo,
   onOpenEditAudio,
   onOpenTrimClip,
   onSelectClip,
@@ -423,6 +425,16 @@ export const PlayerMonitor: React.FC<Props> = ({
             >
               <Scissors className="w-3 h-3 shrink-0" />
               裁剪本段
+            </button>
+          )}
+
+          {mode === 'source' && sourceAsset && sourceAsset.type === 'video' && onSmartSplitVideo && (
+            <button
+              onClick={() => onSmartSplitVideo(sourceAsset)}
+              className="px-2 py-1 rounded bg-[#232734] hover:bg-[#FFB800] border border-[#FFB800]/45 text-[#FFB800] hover:text-[#111318] font-semibold text-[11px] whitespace-nowrap flex items-center gap-1 transition"
+            >
+              <Zap className="w-3 h-3 shrink-0" />
+              智能拆条
             </button>
           )}
 

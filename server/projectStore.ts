@@ -262,21 +262,35 @@ export function deleteAssetFromProject(project: ProjectData, assetId: string): P
     );
   }
 
-  // Check if any other project still references this physical file before unlinking
+  // Check if any asset in the SAME project (e.g. zero-copy split sub-clips) or OTHER projects
+  // still references this physical file before unlinking
   if (asset) {
-    const others = listProjects().filter((p) => p.id !== project.id);
-    let usedElsewhere = false;
-    for (const op of others) {
-      const otherData = readProjectRaw(op.id);
-      if (otherData?.assets.some((a) => a.filename === asset.filename)) {
-        usedElsewhere = true;
-        break;
+    const usedInSameProject = project.assets.some((a) => a.filename === asset.filename);
+    let usedElsewhere = usedInSameProject;
+    if (!usedElsewhere) {
+      const others = listProjects().filter((p) => p.id !== project.id);
+      for (const op of others) {
+        const otherData = readProjectRaw(op.id);
+        if (otherData?.assets.some((a) => a.filename === asset.filename)) {
+          usedElsewhere = true;
+          break;
+        }
       }
     }
     if (!usedElsewhere) {
       const upPath = path.join(UPLOADS_DIR, asset.filename);
       if (fs.existsSync(upPath)) fs.unlinkSync(upPath);
-      const thumbPath = path.join(THUMBS_DIR, `thumb_${asset.id}.jpg`);
+    }
+
+    // Clean up this asset's dedicated thumbnail if no remaining asset points to it
+    const thumbBasename = asset.thumbnailUrl
+      ? path.basename(asset.thumbnailUrl)
+      : `thumb_${asset.id}.jpg`;
+    const thumbStillUsed = project.assets.some(
+      (a) => a.thumbnailUrl && path.basename(a.thumbnailUrl) === thumbBasename
+    );
+    if (!thumbStillUsed) {
+      const thumbPath = path.join(THUMBS_DIR, thumbBasename);
       if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
     }
   }

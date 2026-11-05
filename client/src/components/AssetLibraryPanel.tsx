@@ -44,6 +44,7 @@ interface Props {
   onUploadFiles: (files: File[], tag: SceneTag) => void;
   onPreviewAsset: (asset: MediaAsset) => void;
   onTrimAsset: (asset: MediaAsset) => void;
+  onSmartSplitVideo?: (asset: MediaAsset) => void;
   onEditAudio: (asset: MediaAsset) => void;
   onQuickRemoveBreath: (asset: MediaAsset) => void;
   onOpenTtsStudio: () => void;
@@ -71,6 +72,7 @@ export const AssetLibraryPanel: React.FC<Props> = ({
   onUploadFiles,
   onPreviewAsset,
   onTrimAsset,
+  onSmartSplitVideo,
   onEditAudio,
   onQuickRemoveBreath,
   onOpenTtsStudio,
@@ -779,6 +781,19 @@ export const AssetLibraryPanel: React.FC<Props> = ({
 
                 {/* Right Quick Action Buttons */}
                 <div className="flex items-center gap-1 shrink-0">
+                  {asset.type === 'video' && onSmartSplitVideo && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSmartSplitVideo(asset);
+                      }}
+                      className="px-2 py-1 rounded bg-[#27221B] hover:bg-[#FFB800] border border-[#FFB800]/35 text-[#FFB800] hover:text-[#111318] text-[10px] font-semibold whitespace-nowrap flex items-center gap-0.5 transition"
+                      title="智能识别镜头切点并拆分为独立分镜"
+                    >
+                      <Zap className="w-3 h-3 shrink-0" />
+                      拆条
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -872,6 +887,19 @@ export const AssetLibraryPanel: React.FC<Props> = ({
                 </button>
 
                 <div className="absolute top-1.5 right-1.5 flex items-center gap-1">
+                  {asset.type === 'video' && onSmartSplitVideo && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSmartSplitVideo(asset);
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-black/75 hover:bg-[#FFB800] text-[#FFB800] hover:text-[#111318] border border-[#FFB800]/45 text-[9px] font-bold whitespace-nowrap flex items-center gap-0.5 transition"
+                      title="智能识别转场拆条"
+                    >
+                      <Zap className="w-2.5 h-2.5" />
+                      拆条
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

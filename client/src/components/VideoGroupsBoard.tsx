@@ -25,6 +25,7 @@ import {
 import {
   getClipEffectiveDuration,
   getGroupTotalDuration,
+  getGroupVoiceoverDuration,
   isCustomCropped,
   MediaAsset,
   TimelineClip,
@@ -69,6 +70,8 @@ interface Props {
   onToggleMuteClip: (groupId: string, clipId: string) => void;
   onOpenTrimClip: (group: VideoGroup, clip: TimelineClip) => void;
   onQuickExportSingleGroup: (groupId: string) => void;
+  onAutoAlignGroupDuration?: (groupId: string) => void;
+  onBatchAlignAllGroupsDuration?: () => void;
 }
 
 export const VideoGroupsBoard: React.FC<Props> = ({
@@ -95,6 +98,8 @@ export const VideoGroupsBoard: React.FC<Props> = ({
   onToggleMuteClip,
   onOpenTrimClip,
   onQuickExportSingleGroup,
+  onAutoAlignGroupDuration,
+  onBatchAlignAllGroupsDuration,
 }) => {
   const [dropHint, setDropHint] = useState<{
     groupId: string;
@@ -199,13 +204,27 @@ export const VideoGroupsBoard: React.FC<Props> = ({
           </span>
         </div>
 
-        <button
-          onClick={() => onCreateGroup()}
-          className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/50 text-[#00E5FF] font-semibold text-xs whitespace-nowrap shrink-0 flex items-center gap-1 transition"
-        >
-          <Plus className="w-3.5 h-3.5 shrink-0" />
-          新建视频组
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {onBatchAlignAllGroupsDuration &&
+            groups.some((g) => Boolean(g.voiceoverAssetId) && g.clips.length > 0) && (
+              <button
+                onClick={onBatchAlignAllGroupsDuration}
+                title="自动将所有带配音视频组的画面时长与口播时长精准对齐（防截断/防黑尾）"
+                className="px-2.5 py-1 rounded-lg bg-[#FFB800]/15 hover:bg-[#FFB800] border border-[#FFB800]/45 text-[#FFB800] hover:text-[#111318] font-bold text-xs whitespace-nowrap flex items-center gap-1 transition"
+              >
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                全组音画对齐
+              </button>
+            )}
+
+          <button
+            onClick={() => onCreateGroup()}
+            className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/50 text-[#00E5FF] font-semibold text-xs whitespace-nowrap shrink-0 flex items-center gap-1 transition"
+          >
+            <Plus className="w-3.5 h-3.5 shrink-0" />
+            新建视频组
+          </button>
+        </div>
       </div>
 
       {/* Multi-Group Storyboard Tracks */}
@@ -213,6 +232,11 @@ export const VideoGroupsBoard: React.FC<Props> = ({
         {groups.map((group, gIdx) => {
           const isActive = group.id === activeGroupId;
           const totalDur = getGroupTotalDuration(group);
+          const voTotalDur = getGroupVoiceoverDuration(group, assetMap);
+          const voMismatchSec =
+            voTotalDur > 0.15 && group.clips.length > 0
+              ? totalDur - (voTotalDur + 0.2)
+              : 0;
           const bgmAsset = group.bgmAssetId ? assetMap.get(group.bgmAssetId) : null;
           const voAsset = group.voiceoverAssetId
             ? assetMap.get(group.voiceoverAssetId)
@@ -337,12 +361,33 @@ export const VideoGroupsBoard: React.FC<Props> = ({
                   {voAsset && (
                     <span
                       className="px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-300 flex items-center gap-0.5 max-w-[95px] truncate"
-                      title={`口播配音：${voAsset.name}`}
+                      title={`口播配音：${voAsset.name} (${voTotalDur.toFixed(1)}s)`}
                     >
                       <Mic className="w-2.5 h-2.5 shrink-0" />
                       <span className="truncate">{voAsset.name}</span>
                     </span>
                   )}
+                  {voTotalDur > 0.15 &&
+                    group.clips.length > 0 &&
+                    (Math.abs(voMismatchSec) > 0.55 && onAutoAlignGroupDuration ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAutoAlignGroupDuration(group.id);
+                        }}
+                        title={`画面 ${totalDur.toFixed(1)}s vs 口播 ${voTotalDur.toFixed(
+                          1
+                        )}s，点击一键智能对齐音画时长`}
+                        className="px-1.5 py-0.5 rounded bg-rose-500/20 hover:bg-[#FFB800] border border-rose-400/40 text-rose-200 hover:text-[#111318] font-bold whitespace-nowrap transition"
+                      >
+                        ⚡差{voMismatchSec > 0 ? `+${voMismatchSec.toFixed(1)}` : voMismatchSec.toFixed(1)}s·点此对齐
+                      </button>
+                    ) : (
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 whitespace-nowrap">
+                        ✓音画已齐
+                      </span>
+                    ))}
                   {bgmAsset && (
                     <span
                       className="px-1.5 py-0.5 rounded bg-[#00E5FF]/12 text-[#00E5FF] flex items-center gap-0.5 max-w-[90px] truncate"

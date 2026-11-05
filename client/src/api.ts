@@ -2,9 +2,12 @@ import {
   AiEngineSettings,
   AiScriptGenerateRequest,
   AspectRatio,
+  BeatAnalysisResult,
+  BeatDensityMode,
   BreathRemovalOptions,
   buildSyncedSubtitlesFromScript,
   createDefaultAiSettings,
+  DetectedSceneSegment,
   ExportQuality,
   FULL_CROP,
   GeneratedAdScriptItem,
@@ -14,6 +17,8 @@ import {
   MediaAsset,
   ProjectData,
   RenderBatchJob,
+  SceneDetectRequest,
+  SceneSplitCommitRequest,
   SceneTag,
   SpeechSegmentPayload,
   SubtitleCue,
@@ -855,4 +860,122 @@ export async function prepareLocalAsrSegmentsApi(
   if (!res.ok) throw new Error(data?.error || '提取人声片段失败');
   return data;
 }
+
+// ============================================================================
+// v2.3 Smart Long-Video Scene Split & BGM Beat-Sync Client API
+// ============================================================================
+
+export async function detectVideoScenesApi(
+  project: ProjectData,
+  assetId: string,
+  req: SceneDetectRequest
+): Promise<{
+  segments: DetectedSceneSegment[];
+  modeUsed: 'smart_scdet' | 'fixed_interval';
+  autoFallbackNote?: string;
+}> {
+  if (isStandaloneBrowserMode) {
+    const asset = project.assets.find((a) => a.id === assetId);
+    const dur = asset?.duration || 9;
+    const step = req.mode === 'fixed_interval' ? req.fixedIntervalSec || 3 : Math.max(2, dur / 3);
+    const segs: DetectedSceneSegment[] = [];
+    let idx = 0;
+    for (let s = 0; s < dur - 0.5; s += step) {
+      const e = Math.min(dur, s + step);
+      segs.push({
+        id: uid(),
+        index: idx,
+        startSec: Math.round(s * 100) / 100,
+        endSec: Math.round(e * 100) / 100,
+        durationSec: Math.round((e - s) * 100) / 100,
+        score: 25,
+        name: `${(asset?.name || '视频').slice(0, 14)}_镜头${String(idx + 1).padStart(2, '0')}`,
+        sceneTag: idx === 0 ? '吸睛开头' : idx === 1 ? '核心卖点' : '促销CTA',
+        thumbnailUrl: asset?.thumbnailUrl,
+      });
+      idx++;
+    }
+    return { segments: segs, modeUsed: 'fixed_interval' };
+  }
+
+  const res = await fetch(`/api/projects/${project.id}/assets/${assetId}/scene-detect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, ...req }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '智能镜头切点扫描失败');
+  return data;
+}
+
+export async function commitSceneSplitApi(
+  project: ProjectData,
+  assetId: string,
+  req: SceneSplitCommitRequest
+): Promise<{ createdAssets: MediaAsset[]; project: ProjectData }> {
+  if (isStandaloneBrowserMode) {
+    const clone = structuredClone(project);
+    const src = clone.assets.find((a) => a.id === assetId);
+    if (!src) throw new Error('找不到源视频素材');
+    const created: MediaAsset[] = req.segments.map((seg, i) => ({
+      ...structuredClone(src),
+      id: uid(),
+      name: seg.name || `${src.name}_镜头${i + 1}`,
+      sceneTag: seg.sceneTag,
+      defaultTrimStart: seg.startSec,
+      defaultTrimEnd: seg.endSec,
+      thumbnailUrl: seg.thumbnailUrl || src.thumbnailUrl,
+      createdAt: new Date().toISOString(),
+    }));
+    clone.assets.unshift(...created);
+    saveLocalProject(clone);
+    return { createdAssets: created, project: clone };
+  }
+
+  const res = await fetch(`/api/projects/${project.id}/assets/${assetId}/scene-split-commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, ...req }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '保存拆条子镜头失败');
+  return data;
+}
+
+export async function detectAudioBeatsApi(
+  project: ProjectData,
+  assetId: string,
+  options: {
+    trimStart?: number;
+    trimEnd?: number;
+    speed?: number;
+    density?: BeatDensityMode;
+  } = {}
+): Promise<BeatAnalysisResult> {
+  if (isStandaloneBrowserMode) {
+    const asset = project.assets.find((a) => a.id === assetId);
+    const dur = Math.max(4, (options.trimEnd || asset?.duration || 16) - (options.trimStart || 0));
+    const step = options.density === 'dense' ? 1.2 : options.density === 'relaxed' ? 3.2 : 2.0;
+    const beatsSec: number[] = [0];
+    for (let t = step; t < dur - 0.4; t += step) beatsSec.push(Math.round(t * 100) / 100);
+    beatsSec.push(Math.round(dur * 100) / 100);
+    return {
+      assetId,
+      analyzedDurationSec: dur,
+      estimatedBpm: 120,
+      density: options.density || 'standard',
+      beatsSec,
+    };
+  }
+
+  const res = await fetch(`/api/projects/${project.id}/assets/${assetId}/beats`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, ...options }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || '音乐鼓点分析失败');
+  return data;
+}
+
 

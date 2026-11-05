@@ -1108,3 +1108,355 @@ export interface SpeechSegmentPayload {
   pcmFloat32Base64: string;
 }
 
+// ============================================================================
+// v2.3 Smart Long-Video Scene Split, BGM Beat-Sync & Audio-Video Auto-Align
+// ============================================================================
+
+export type SceneSplitMode = 'smart_scdet' | 'fixed_interval';
+
+export type SceneSplitSensitivity = 'high' | 'standard' | 'low';
+
+export interface DetectedSceneSegment {
+  id: string;
+  index: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  score: number;
+  name: string;
+  sceneTag: SceneTag;
+  thumbnailUrl?: string;
+}
+
+export interface SceneDetectRequest {
+  mode: SceneSplitMode;
+  sensitivity?: SceneSplitSensitivity;
+  minShotSec?: number; // e.g. 1.5s
+  fixedIntervalSec?: number; // e.g. 3.0s when mode === 'fixed_interval'
+}
+
+export type SceneSplitDispatchMode =
+  | 'library_only'
+  | 'active_group'
+  | 'matrix_slots_by_tag';
+
+export interface SceneSplitCommitRequest {
+  segments: Array<{
+    startSec: number;
+    endSec: number;
+    name: string;
+    sceneTag: SceneTag;
+    thumbnailUrl?: string;
+  }>;
+  dispatchMode: SceneSplitDispatchMode;
+  targetGroupId?: string;
+  removeOriginalAsset?: boolean;
+}
+
+export type BeatDensityMode = 'dense' | 'standard' | 'relaxed';
+
+export type BeatSyncStrategy = 'trim_first' | 'speed_fit';
+
+export interface BeatAnalysisResult {
+  assetId: string;
+  analyzedDurationSec: number;
+  estimatedBpm: number;
+  density: BeatDensityMode;
+  /** Beat timestamps (seconds, starting at 0.0) relative to the analyzed BGM window */
+  beatsSec: number[];
+}
+
+export type DurationAlignMode =
+  | 'hybrid_smart'
+  | 'video_speed_only'
+  | 'voiceover_speed_fit';
+
+export const DURATION_ALIGN_MODES: Record<
+  DurationAlignMode,
+  { label: string; badge: string; desc: string }
+> = {
+  hybrid_smart: {
+    label: '智能混合对齐 (先展缩片段裁剪，不足再微变速)',
+    badge: '自然推荐',
+    desc: '优先利用原片冗余时长保持 1.0x 原速，原片不够长时自动平滑微变速补齐口播',
+  },
+  video_speed_only: {
+    label: '固定已剪画面范围 · 均匀变速对齐口播',
+    badge: '保完整动作',
+    desc: '不改动每个镜头的起止画面内容，按比例自动调节片段倍速与图片停留时长',
+  },
+  voiceover_speed_fit: {
+    label: '固定画面卡点 · 反向微调口播语速与字幕轴',
+    badge: '保音乐踩点',
+    desc: '适合已做好音乐鼓点卡点的视频组：不动画面切点，自动微调口播倍速并同步缩放字幕时间轴',
+  },
+};
+
+/**
+ * Returns the effective end timestamp (seconds on group timeline) of the active voiceover track,
+ * or 0 if the group has no valid voiceover assigned.
+ */
+export function getGroupVoiceoverDuration(
+  group: VideoGroup,
+  assetMap: Map<string, MediaAsset>
+): number {
+  if (!group.voiceoverAssetId) return 0;
+  const vo = assetMap.get(group.voiceoverAssetId);
+  if (!vo) return 0;
+  const start = group.voiceoverTrimStart ?? vo.defaultTrimStart ?? 0;
+  const rawEnd = group.voiceoverTrimEnd || vo.defaultTrimEnd || vo.duration || 0;
+  const end = Math.max(start + 0.1, rawEnd);
+  const spd = Math.max(0.5, Math.min(2.0, group.voiceoverSpeed || vo.defaultSpeed || 1.0));
+  const delay = Math.max(0, group.voiceoverDelaySec || 0);
+  return Math.round((delay + (end - start) / spd) * 100) / 100;
+}
+
+function computeTransitionOverlapSum(clips: TimelineClip[]): number {
+  let overlap = 0;
+  for (let i = 0; i < clips.length - 1; i++) {
+    if (clips[i].transition !== 'none') {
+      const d = getClipEffectiveDuration(clips[i]);
+      const nextD = getClipEffectiveDuration(clips[i + 1]);
+      overlap += Math.min(0.35, d * 0.3, nextD * 0.3);
+    }
+  }
+  return overlap;
+}
+
+/**
+ * Aligns a VideoGroup's visual timeline and/or voiceover duration so there is zero audio cut-off
+ * and zero awkward trailing silent tail.
+ */
+export function alignGroupDurationToVoiceover(
+  group: VideoGroup,
+  assetMap: Map<string, MediaAsset>,
+  mode: DurationAlignMode = 'hybrid_smart',
+  tailPadSec = 0.2
+): {
+  changed: boolean;
+  beforeVideoSec: number;
+  afterVideoSec: number;
+  voiceoverSec: number;
+  note: string;
+} {
+  const beforeVideoSec = getGroupTotalDuration(group);
+  const voEndSec = getGroupVoiceoverDuration(group, assetMap);
+  if (!group.clips.length || voEndSec <= 0.15) {
+    return {
+      changed: false,
+      beforeVideoSec,
+      afterVideoSec: beforeVideoSec,
+      voiceoverSec: voEndSec,
+      note: '当前组未挂载口播配音或无画面片段',
+    };
+  }
+
+  const targetSec = Math.max(0.8, voEndSec + tailPadSec);
+  if (Math.abs(beforeVideoSec - targetSec) < 0.08) {
+    return {
+      changed: false,
+      beforeVideoSec,
+      afterVideoSec: beforeVideoSec,
+      voiceoverSec: voEndSec,
+      note: '当前音画时长已精准对齐',
+    };
+  }
+
+  // Strategy 3: Keep video cuts untouched; adjust voiceover playback speed + rescale subtitle cues!
+  if (mode === 'voiceover_speed_fit') {
+    const vo = group.voiceoverAssetId ? assetMap.get(group.voiceoverAssetId) : null;
+    if (!vo) {
+      return {
+        changed: false,
+        beforeVideoSec,
+        afterVideoSec: beforeVideoSec,
+        voiceoverSec: voEndSec,
+        note: '未找到口播音频素材',
+      };
+    }
+    const delay = Math.max(0, group.voiceoverDelaySec || 0);
+    const availVoWindow = Math.max(0.5, beforeVideoSec - delay - 0.15);
+    const start = group.voiceoverTrimStart ?? vo.defaultTrimStart ?? 0;
+    const end = Math.max(start + 0.1, group.voiceoverTrimEnd || vo.defaultTrimEnd || vo.duration);
+    const rawSpan = end - start;
+    const oldSpd = group.voiceoverSpeed || vo.defaultSpeed || 1.0;
+    const idealSpd = rawSpan / availVoWindow;
+    const clampedSpd = Math.round(Math.max(0.78, Math.min(1.55, idealSpd)) * 100) / 100;
+    group.voiceoverSpeed = clampedSpd;
+
+    // Proportionally remap subtitle cues after `delay` so hard-burned subtitles stay 100% synced!
+    if (group.subtitles?.cues?.length && Math.abs(clampedSpd - oldSpd) > 0.005) {
+      const timeScale = oldSpd / clampedSpd;
+      group.subtitles.cues = group.subtitles.cues.map((c) => {
+        const relS = Math.max(0, c.startSec - delay);
+        const relE = Math.max(relS + 0.15, c.endSec - delay);
+        return {
+          ...c,
+          startSec: Math.round((delay + relS * timeScale) * 100) / 100,
+          endSec: Math.round((delay + relE * timeScale) * 100) / 100,
+        };
+      });
+    }
+
+    const newVoSec = getGroupVoiceoverDuration(group, assetMap);
+    return {
+      changed: true,
+      beforeVideoSec,
+      afterVideoSec: beforeVideoSec,
+      voiceoverSec: newVoSec,
+      note: `口播倍速已智能调整为 ${clampedSpd}x（字幕轴同步校准）`,
+    };
+  }
+
+  // Strategy 1 & 2: Adjust visual clips so getGroupTotalDuration(group) === targetSec
+  // Two-pass solver to account accurately for xfade transition overlaps
+  for (let pass = 0; pass < 2; pass++) {
+    const curTotal = getGroupTotalDuration(group);
+    if (Math.abs(curTotal - targetSec) < 0.02) break;
+    const overlap = computeTransitionOverlapSum(group.clips);
+    const curSumEff = curTotal + overlap;
+    const desiredSumEff = Math.max(group.clips.length * 0.35, targetSec + overlap);
+    const scaleRatio = desiredSumEff / Math.max(0.1, curSumEff);
+
+    for (const clip of group.clips) {
+      const asset = assetMap.get(clip.assetId);
+      const curEff = getClipEffectiveDuration(clip);
+      const wantEff = Math.max(0.35, curEff * scaleRatio);
+
+      if (!asset || asset.type === 'image') {
+        clip.speed = 1.0;
+        clip.trimStart = 0;
+        clip.trimEnd = Math.round(wantEff * 100) / 100;
+        continue;
+      }
+
+      if (mode === 'hybrid_smart') {
+        // Prefer natural 1.0x speed if raw asset footage after trimStart has enough length!
+        const maxAvailFromStart = Math.max(0.35, asset.duration - clip.trimStart);
+        if (wantEff <= maxAvailFromStart) {
+          clip.speed = 1.0;
+          clip.trimEnd = Math.round((clip.trimStart + wantEff) * 100) / 100;
+        } else if (wantEff <= asset.duration) {
+          // Shift trimStart back slightly to unlock full footage at 1.0x!
+          clip.speed = 1.0;
+          clip.trimStart = Math.round(Math.max(0, asset.duration - wantEff) * 100) / 100;
+          clip.trimEnd = Math.round(asset.duration * 100) / 100;
+        } else {
+          // Use full footage + smooth slow-motion (clamped >= 0.45x)
+          clip.trimStart = 0;
+          clip.trimEnd = Math.round(asset.duration * 100) / 100;
+          const neededSpd = asset.duration / wantEff;
+          clip.speed = Math.round(Math.max(0.45, Math.min(2.0, neededSpd)) * 100) / 100;
+        }
+      } else {
+        // video_speed_only: preserve [trimStart, trimEnd] content and adjust speed
+        const rawSpan = Math.max(0.25, clip.trimEnd - clip.trimStart);
+        const neededSpd = rawSpan / wantEff;
+        if (neededSpd >= 0.5 && neededSpd <= 1.95) {
+          clip.speed = Math.round(neededSpd * 100) / 100;
+        } else if (neededSpd < 0.5) {
+          clip.speed = 0.5;
+          const extraRawNeeded = wantEff * 0.5;
+          clip.trimEnd = Math.round(
+            Math.min(asset.duration, clip.trimStart + extraRawNeeded) * 100
+          ) / 100;
+        } else {
+          clip.speed = 1.95;
+          clip.trimEnd = Math.round((clip.trimStart + wantEff * 1.95) * 100) / 100;
+        }
+      }
+    }
+  }
+
+  const afterVideoSec = getGroupTotalDuration(group);
+  return {
+    changed: true,
+    beforeVideoSec,
+    afterVideoSec,
+    voiceoverSec: voEndSec,
+    note: `画面总长已从 ${beforeVideoSec.toFixed(1)}s 对齐至 ${afterVideoSec.toFixed(1)}s（匹配口播 ${voEndSec.toFixed(1)}s）`,
+  };
+}
+
+/**
+ * Snaps every clip in `group.clips` onto detected musical beat intervals `beatsSec`
+ * (`[0, b1, b2, ...]`), compensating for `xfade` transition overlaps so every visual
+ * cut/transition lands directly on the beat!
+ */
+export function applyBeatsToGroupClips(
+  group: VideoGroup,
+  assetMap: Map<string, MediaAsset>,
+  beatsSec: number[],
+  strategy: BeatSyncStrategy = 'trim_first'
+): { alignedClips: number; totalSec: number } {
+  const N = group.clips.length;
+  if (N === 0 || beatsSec.length < 2) {
+    return { alignedClips: 0, totalSec: getGroupTotalDuration(group) };
+  }
+
+  // Ensure monotonic beat grid with enough beat points to cover all N clips
+  const grid = [...beatsSec].sort((a, b) => a - b);
+  if (grid[0] > 0.05) grid.unshift(0);
+  else grid[0] = 0;
+
+  const avgStep =
+    grid.length >= 2
+      ? Math.max(0.8, (grid[grid.length - 1] - grid[0]) / (grid.length - 1))
+      : 2.0;
+  while (grid.length <= N) {
+    grid.push(Math.round((grid[grid.length - 1] + avgStep) * 100) / 100);
+  }
+
+  for (let i = 0; i < N; i++) {
+    const clip = group.clips[i];
+    const asset = assetMap.get(clip.assetId);
+    const beatSpan = Math.max(0.45, grid[i + 1] - grid[i]);
+    const hasOutTransition = i < N - 1 && clip.transition !== 'none';
+    const trComp = hasOutTransition ? Math.min(0.35, beatSpan * 0.28) : 0;
+    const wantEff = beatSpan + trComp;
+
+    if (!asset || asset.type === 'image') {
+      clip.speed = 1.0;
+      clip.trimStart = 0;
+      clip.trimEnd = Math.round(wantEff * 100) / 100;
+      continue;
+    }
+
+    if (strategy === 'trim_first') {
+      const maxAvail = Math.max(0.25, asset.duration - clip.trimStart);
+      if (wantEff <= maxAvail) {
+        clip.speed = 1.0;
+        clip.trimEnd = Math.round((clip.trimStart + wantEff) * 100) / 100;
+      } else if (wantEff <= asset.duration) {
+        clip.speed = 1.0;
+        clip.trimStart = Math.round(Math.max(0, asset.duration - wantEff) * 100) / 100;
+        clip.trimEnd = Math.round(asset.duration * 100) / 100;
+      } else {
+        clip.trimStart = 0;
+        clip.trimEnd = Math.round(asset.duration * 100) / 100;
+        clip.speed = Math.round(Math.max(0.5, asset.duration / wantEff) * 100) / 100;
+      }
+    } else {
+      const rawSpan = Math.max(0.25, clip.trimEnd - clip.trimStart);
+      const spd = rawSpan / wantEff;
+      if (spd >= 0.55 && spd <= 1.85) {
+        clip.speed = Math.round(spd * 100) / 100;
+      } else if (spd < 0.55) {
+        clip.speed = 0.55;
+        clip.trimEnd = Math.round(
+          Math.min(asset.duration, clip.trimStart + wantEff * 0.55) * 100
+        ) / 100;
+      } else {
+        clip.speed = 1.85;
+        clip.trimEnd = Math.round((clip.trimStart + wantEff * 1.85) * 100) / 100;
+      }
+    }
+  }
+
+  return {
+    alignedClips: N,
+    totalSec: getGroupTotalDuration(group),
+  };
+}
+
+
