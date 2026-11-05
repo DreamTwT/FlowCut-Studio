@@ -40,6 +40,7 @@ import {
   saveAiSettingsApi,
   synthesizeTtsApi,
   testAiConnectionApi,
+  testCloudAsrApi,
 } from '../api';
 import { formatShortSec } from '../utils/format';
 import { CustomSelect } from './CustomSelect';
@@ -98,7 +99,9 @@ export const TtsStudioModal: React.FC<Props> = ({
   // =========================================================================
   const [aiSettings, setAiSettings] = useState<AiEngineSettings>(createDefaultAiSettings());
   const [showKeyPlain, setShowKeyPlain] = useState(false);
+  const [showAsrKeyPlain, setShowAsrKeyPlain] = useState(false);
   const [testingConn, setTestingConn] = useState(false);
+  const [testingAsrConn, setTestingAsrConn] = useState(false);
   const [savingCfg, setSavingCfg] = useState(false);
   const [connStatus, setConnStatus] = useState<{ ok: boolean; msg: string } | null>(null);
 
@@ -156,9 +159,19 @@ export const TtsStudioModal: React.FC<Props> = ({
     }
   };
 
-  // =========================================================================
-  // Tab 1: AI Ad Script Fission State
-  // =========================================================================
+  const handleTestAsrConnection = async () => {
+    setTestingAsrConn(true);
+    setConnStatus(null);
+    try {
+      await saveAiSettingsApi(aiSettings);
+      const res = await testCloudAsrApi(aiSettings);
+      setConnStatus({ ok: res.ok, msg: res.message });
+    } catch (err: any) {
+      setConnStatus({ ok: false, msg: err?.message || '云端 ASR 测试请求异常' });
+    } finally {
+      setTestingAsrConn(false);
+    }
+  };
   const [productName, setProductName] = useState<string>(
     project.name.split('·')[0]?.trim() || '极光随行碎冰榨汁杯'
   );
@@ -582,12 +595,17 @@ export const TtsStudioModal: React.FC<Props> = ({
 
               {/* Dual-Mode ASR Configuration */}
               <div className="pt-4 border-t border-[#252C42] space-y-3">
-                <div className="text-xs font-bold text-white flex items-center gap-2">
-                  <Mic className="w-3.5 h-3.5 text-[#FFB800]" />
-                  原声语音识别转字幕 (ASR) 双模引擎偏好
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="text-xs font-bold text-white flex items-center gap-2">
+                    <Mic className="w-3.5 h-3.5 text-[#FFB800]" />
+                    原声语音识别转字幕 (ASR) 双模引擎偏好
+                  </div>
+                  <span className="text-[11px] text-[#8A90A2]">
+                    硅基流动 / 智谱 / 阿里百炼可自动共用上方 Key；若主模型选 DeepSeek/豆包，请在下方单独填硅基流动免费 Key
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <label className="text-[11px] text-[#B8C0D0]">默认语音识别引擎</label>
                     <CustomSelect<AsrEngineMode>
@@ -620,21 +638,6 @@ export const TtsStudioModal: React.FC<Props> = ({
 
                   <div className="space-y-1">
                     <label className="text-[11px] text-[#B8C0D0]">
-                      云端 ASR 模型 (留空独立Key则自动复用上方Key)
-                    </label>
-                    <input
-                      type="text"
-                      value={aiSettings.asrModel}
-                      onChange={(e) =>
-                        setAiSettings((s) => ({ ...s, asrModel: e.target.value }))
-                      }
-                      placeholder="FunAudioLLM/SenseVoiceSmall"
-                      className="w-full h-9 bg-[#171B28] border border-[#2E3650] focus:border-[#00E5FF] rounded-lg px-2.5 text-xs text-white font-mono outline-none"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-[#B8C0D0]">
                       本地免Key离线 Whisper 模型规格
                     </label>
                     <CustomSelect<LocalWhisperModelId>
@@ -661,11 +664,91 @@ export const TtsStudioModal: React.FC<Props> = ({
                     />
                   </div>
                 </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[#B8C0D0]">
+                      独立云端 ASR 接口地址 (默认硅基流动)
+                    </label>
+                    <input
+                      type="text"
+                      value={aiSettings.asrBaseUrl}
+                      onChange={(e) =>
+                        setAiSettings((s) => ({ ...s, asrBaseUrl: e.target.value }))
+                      }
+                      placeholder="https://api.siliconflow.cn/v1"
+                      className="w-full h-9 bg-[#171B28] border border-[#2E3650] focus:border-[#00E5FF] rounded-lg px-2.5 text-xs text-white font-mono outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[#B8C0D0]">
+                      独立云端 ASR 密钥 (留空则复用上方同源 Key)
+                    </label>
+                    <div className="relative flex items-center">
+                      <input
+                        type={showAsrKeyPlain ? 'text' : 'password'}
+                        value={aiSettings.asrApiKey}
+                        onChange={(e) =>
+                          setAiSettings((s) => ({ ...s, asrApiKey: e.target.value }))
+                        }
+                        placeholder="选填：如硅基流动免费 sk-..."
+                        className="w-full h-9 bg-[#171B28] border border-[#2E3650] focus:border-[#00E5FF] rounded-lg pl-2.5 pr-8 text-xs text-white font-mono outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowAsrKeyPlain((v) => !v)}
+                        className="absolute right-2 text-[#8A90A2] hover:text-white"
+                      >
+                        {showAsrKeyPlain ? (
+                          <EyeOff className="w-3.5 h-3.5" />
+                        ) : (
+                          <Eye className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[#B8C0D0]">云端 ASR 模型名称</label>
+                    <input
+                      type="text"
+                      value={aiSettings.asrModel}
+                      onChange={(e) =>
+                        setAiSettings((s) => ({ ...s, asrModel: e.target.value }))
+                      }
+                      placeholder="FunAudioLLM/SenseVoiceSmall"
+                      className="w-full h-9 bg-[#171B28] border border-[#2E3650] focus:border-[#00E5FF] rounded-lg px-2.5 text-xs text-white font-mono outline-none"
+                    />
+                    <div className="flex flex-wrap gap-1 pt-0.5">
+                      {[
+                        'FunAudioLLM/SenseVoiceSmall',
+                        'TeleAI/TeleSpeechASR',
+                        'glm-asr',
+                        'qwen-omni-turbo',
+                        'whisper-1',
+                      ].map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setAiSettings((s) => ({ ...s, asrModel: m }))}
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-mono border transition ${
+                            aiSettings.asrModel === m
+                              ? 'bg-[#FFB800]/18 border-[#FFB800] text-[#FFB800]'
+                              : 'bg-[#171B28] border-[#2A3147] text-[#9CA3AF] hover:text-white'
+                          }`}
+                        >
+                          {m.split('/').pop()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Test & Save Footer */}
               <div className="pt-3 border-t border-[#252C42] flex items-center justify-between gap-3 flex-wrap">
-                <div className="text-xs">
+                <div className="text-xs max-w-xl">
                   {connStatus && (
                     <span
                       className={
@@ -677,15 +760,24 @@ export const TtsStudioModal: React.FC<Props> = ({
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
                     type="button"
                     onClick={handleTestConnection}
-                    disabled={testingConn}
-                    className="h-9 px-4 rounded-lg bg-[#21273B] hover:bg-[#2B334D] border border-[#36405E] text-xs text-[#00E5FF] font-semibold flex items-center gap-1.5 whitespace-nowrap transition"
+                    disabled={testingConn || testingAsrConn}
+                    className="h-9 px-3.5 rounded-lg bg-[#21273B] hover:bg-[#2B334D] border border-[#36405E] text-xs text-[#00E5FF] font-semibold flex items-center gap-1.5 whitespace-nowrap transition"
                   >
                     {testingConn && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                    测试大模型连通性
+                    测试大模型
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleTestAsrConnection}
+                    disabled={testingConn || testingAsrConn}
+                    className="h-9 px-3.5 rounded-lg bg-[#25221B] hover:bg-[#332E22] border border-[#FFB800]/45 text-xs text-[#FFB800] font-semibold flex items-center gap-1.5 whitespace-nowrap transition"
+                  >
+                    {testingAsrConn && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    测试云端 ASR
                   </button>
                   <button
                     type="button"

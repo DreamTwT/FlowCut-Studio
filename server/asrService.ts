@@ -6,6 +6,7 @@ import { Response } from 'express';
 import { FFMPEG_BIN, MODELS_DIR, refreshMediaBinaries, UPLOADS_DIR } from './paths.js';
 import { loadAiSettings } from './aiScriptService.js';
 import {
+  AI_PROVIDER_PRESETS,
   AiEngineSettings,
   buildSyncedSubtitlesFromScript,
   MediaAsset,
@@ -37,7 +38,7 @@ async function decodeGroupTimelineAudio16k(
   project: ProjectData,
   group: VideoGroup,
   sourceTrack: 'auto' | 'voiceover' | 'video_clips' = 'auto'
-): Promise<{ samples: Float32Array; sourceLabel: string }> {
+): Promise<{ samples: Float32Array; sourceLabel: string; timelineOffsetSec: number }> {
   const bins = refreshMediaBinaries();
   if (!bins.ffmpegFound) {
     throw new Error('未检测到 FFmpeg 引擎，无法提取音轨进行语音识别');
@@ -56,9 +57,8 @@ async function decodeGroupTimelineAudio16k(
         Math.min(vo.duration, group.voiceoverTrimEnd || vo.defaultTrimEnd || vo.duration)
       );
       const spd = Math.min(2.0, Math.max(0.5, group.voiceoverSpeed ?? vo.defaultSpeed ?? 1.0));
-      const delayMs = Math.round(Math.max(0, group.voiceoverDelaySec || 0) * 1000);
+      const delaySec = Math.max(0, group.voiceoverDelaySec || 0);
       const tempoExpr = Math.abs(spd - 1.0) > 0.01 ? `,atempo=${spd.toFixed(4)}` : '';
-      const delayExpr = delayMs > 0 ? `,adelay=${delayMs}` : '';
 
       const samples = await runFfmpegToFloat32(ffmpegBin, [
         '-v',
@@ -66,7 +66,7 @@ async function decodeGroupTimelineAudio16k(
         '-i',
         voPath,
         '-af',
-        `atrim=${t0.toFixed(3)}:${t1.toFixed(3)},asetpts=PTS-STARTPTS${tempoExpr}${delayExpr}`,
+        `atrim=${t0.toFixed(3)}:${t1.toFixed(3)},asetpts=PTS-STARTPTS${tempoExpr}`,
         '-ac',
         '1',
         '-ar',
@@ -75,8 +75,15 @@ async function decodeGroupTimelineAudio16k(
         'f32le',
         'pipe:1',
       ]);
-      return { samples, sourceLabel: `口播轨「${vo.name}」` };
+      return {
+        samples,
+        sourceLabel: `口播轨「${vo.name}」`,
+        timelineOffsetSec: delaySec,
+      };
     }
+  }
+  if (sourceTrack === 'voiceover') {
+    throw new Error('当前视频组尚未挂载独立的口播配音轨，请切换为「智能音轨」或先添加配音');
   }
 
   // Otherwise extract exact timeline audio across group's video/image clips!
@@ -94,12 +101,21 @@ async function decodeGroupTimelineAudio16k(
     throw new Error('当前视频组没有可识别的视频原声或口播音频');
   }
 
+  const allMuted =
+    validClips.some((x) => x.asset.type === 'video' && x.asset.hasAudio) &&
+    validClips.every((x) => !(x.asset.type === 'video' && x.asset.hasAudio) || x.clip.muted);
+  if (allMuted) {
+    throw new Error(
+      '当前视频组内的视频片段均已静音（缩略图左下角红喇叭），若需识别原片说话声请先取消片段静音，或切换为识别口播配音轨'
+    );
+  }
+
   const hasAnyVideoAudio = validClips.some(
     (x) => x.asset.type === 'video' && x.asset.hasAudio && !x.clip.muted
   );
   if (!hasAnyVideoAudio) {
     throw new Error(
-      '当前视频组内的视频片段均无原声音轨（或已被静音），请先取消静音或挂载外录口播音频'
+      '当前视频组内的视频片段均无原声音轨，请挂载口播音频后再识别'
     );
   }
 
@@ -170,7 +186,11 @@ async function decodeGroupTimelineAudio16k(
     'pipe:1',
   ]);
 
-  return { samples, sourceLabel: `本组视频原声时间轴 (${validClips.length}段)` };
+  return {
+    samples,
+    sourceLabel: `本组视频原声时间轴 (${validClips.length}段)`,
+    timelineOffsetSec: 0,
+  };
 }
 
 function runFfmpegToFloat32(ffmpegBin: string, args: string[]): Promise<Float32Array> {
@@ -351,6 +371,245 @@ export function cleanAsrTranscriptText(raw: string): string {
   );
 }
 
+interface ResolvedCloudAsrPlan {
+  protocol: 'openai_transcriptions' | 'qwen_multimodal_chat';
+  endpointUrl: string;
+  apiKey: string;
+  model: string;
+  providerLabel: string;
+}
+
+function resolveCloudAsrPlan(cfg: AiEngineSettings): ResolvedCloudAsrPlan {
+  const dedicatedKey = (cfg.asrApiKey || '').trim();
+  const mainKey = (cfg.apiKey || '').trim();
+
+  // 1) User explicitly configured a dedicated Cloud ASR API Key -> always use ASR fields!
+  if (dedicatedKey) {
+    const rawBase = (cfg.asrBaseUrl || 'https://api.siliconflow.cn/v1')
+      .trim()
+      .replace(/\/+$/, '');
+    const isDashScope = rawBase.includes('dashscope.aliyuncs.com');
+    const model = (
+      cfg.asrModel ||
+      (isDashScope
+        ? 'qwen-omni-turbo'
+        : rawBase.includes('bigmodel.cn')
+        ? 'glm-asr'
+        : 'FunAudioLLM/SenseVoiceSmall')
+    ).trim();
+    return {
+      protocol: isDashScope ? 'qwen_multimodal_chat' : 'openai_transcriptions',
+      endpointUrl: isDashScope ? `${rawBase}/chat/completions` : `${rawBase}/audio/transcriptions`,
+      apiKey: dedicatedKey,
+      model,
+      providerLabel: '独立云端ASR密钥',
+    };
+  }
+
+  // 2) No dedicated ASR key -> check main LLM provider & key
+  const preset = AI_PROVIDER_PRESETS[cfg.providerId];
+  const presetName = preset?.name.split(' ')[0] || cfg.providerId;
+
+  if (!mainKey) {
+    throw new Error(
+      '[ASR_CONFIG_REQUIRED] 尚未配置云端语音识别 API Key。推荐点击右上角钥匙图标填入免费的「硅基流动 SiliconFlow」API Key（1秒极速出字），或直接点击旁边的「本地免Key识别」离线提取字幕！'
+    );
+  }
+
+  if (cfg.providerId === 'siliconflow') {
+    const base = (cfg.baseUrl || 'https://api.siliconflow.cn/v1').trim().replace(/\/+$/, '');
+    return {
+      protocol: 'openai_transcriptions',
+      endpointUrl: `${base}/audio/transcriptions`,
+      apiKey: mainKey,
+      model: (cfg.asrModel || 'FunAudioLLM/SenseVoiceSmall').trim(),
+      providerLabel: '硅基流动 SiliconFlow',
+    };
+  }
+
+  if (cfg.providerId === 'zhipu') {
+    const base = (cfg.baseUrl || 'https://open.bigmodel.cn/api/paas/v4')
+      .trim()
+      .replace(/\/+$/, '');
+    const userModel = (cfg.asrModel || '').trim();
+    const model =
+      !userModel || userModel.includes('SenseVoice') ? 'glm-asr' : userModel;
+    return {
+      protocol: 'openai_transcriptions',
+      endpointUrl: `${base}/audio/transcriptions`,
+      apiKey: mainKey,
+      model,
+      providerLabel: '智谱开放平台 GLM-ASR',
+    };
+  }
+
+  if (cfg.providerId === 'aliyun_bailian') {
+    const base = (cfg.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+      .trim()
+      .replace(/\/+$/, '');
+    const userModel = (cfg.asrModel || '').trim();
+    const model =
+      !userModel || userModel.includes('SenseVoice') ? 'qwen-omni-turbo' : userModel;
+    return {
+      protocol: 'qwen_multimodal_chat',
+      endpointUrl: `${base}/chat/completions`,
+      apiKey: mainKey,
+      model,
+      providerLabel: '阿里百炼 Qwen-Omni',
+    };
+  }
+
+  if (cfg.providerId === 'openai_custom') {
+    const base = (cfg.asrBaseUrl || cfg.baseUrl || 'https://api.openai.com/v1')
+      .trim()
+      .replace(/\/+$/, '');
+    const userModel = (cfg.asrModel || '').trim();
+    const model =
+      !userModel || userModel.includes('SenseVoice') ? 'whisper-1' : userModel;
+    return {
+      protocol: 'openai_transcriptions',
+      endpointUrl: `${base}/audio/transcriptions`,
+      apiKey: mainKey,
+      model,
+      providerLabel: '自定义 OpenAI 兼容接口',
+    };
+  }
+
+  // DeepSeek / Doubao / Ollama do NOT expose /audio/transcriptions!
+  // Never leak or misroute their key to SiliconFlow (which caused 401 Token is invalid)!
+  throw new Error(
+    `[ASR_CONFIG_REQUIRED] 当前主模型「${presetName}」仅提供文本对话接口，不支持云端语音转文字。请在配置面板下方「独立云端 ASR 密钥」处填入免费的硅基流动 Key，或直接点击旁边的「本地免Key识别」！`
+  );
+}
+
+async function transcribeSingleWavBufferViaPlan(
+  wavBuf: Buffer,
+  segIdx: number,
+  plan: ResolvedCloudAsrPlan
+): Promise<string> {
+  if (plan.protocol === 'qwen_multimodal_chat') {
+    const b64 = wavBuf.toString('base64');
+    const res = await fetch(plan.endpointUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${plan.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: plan.model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_audio',
+                input_audio: {
+                  data: `data:audio/wav;base64,${b64}`,
+                  format: 'wav',
+                },
+              },
+              {
+                type: 'text',
+                text: '请逐字准确转写这段中文语音内容，只输出纯文字台词，若无说话声则输出空字符串，不要任何解释。',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      const errTxt = await res.text().catch(() => '');
+      throw new Error(formatCloudAsrHttpError(res.status, plan.providerLabel, errTxt));
+    }
+    const json: any = await res.json();
+    const content = json?.choices?.[0]?.message?.content;
+    const rawText = Array.isArray(content)
+      ? content.map((c: any) => c?.text || '').join('')
+      : String(content || '');
+    return cleanAsrTranscriptText(rawText);
+  }
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([new Uint8Array(wavBuf)], { type: 'audio/wav' }),
+    `seg_${segIdx}.wav`
+  );
+  form.append('model', plan.model);
+  if (plan.model.toLowerCase().includes('whisper')) {
+    form.append('language', 'zh');
+  }
+
+  const headers: Record<string, string> = {};
+  if (plan.apiKey) {
+    headers.Authorization = `Bearer ${plan.apiKey}`;
+  }
+
+  const res = await fetch(plan.endpointUrl, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+
+  if (!res.ok) {
+    const errTxt = await res.text().catch(() => '');
+    throw new Error(formatCloudAsrHttpError(res.status, plan.providerLabel, errTxt));
+  }
+
+  const json: any = await res.json();
+  return cleanAsrTranscriptText(String(json?.text || ''));
+}
+
+function formatCloudAsrHttpError(status: number, providerLabel: string, rawBody: string): string {
+  const shortBody = rawBody.replace(/\s+/g, ' ').slice(0, 110);
+  if (status === 401 || status === 403) {
+    return `[ASR_CONFIG_REQUIRED] ${providerLabel} API Key 校验未通过 (HTTP ${status})：请检查密钥是否填写正确，且与所选服务商匹配（${shortBody}）`;
+  }
+  if (status === 404) {
+    return `[ASR_CONFIG_REQUIRED] ${providerLabel} 当前接口地址不支持语音识别端点 (HTTP 404)，建议在下方单独填入硅基流动免费 ASR Key 或使用「本地免Key识别」`;
+  }
+  if (status === 429) {
+    return `${providerLabel} 请求过于频繁或额度不足 (HTTP 429)，请稍后再试或切换「本地免Key识别」`;
+  }
+  return `${providerLabel} 云端语音识别返回 HTTP ${status}: ${shortBody}`;
+}
+
+export async function testCloudAsrConnection(
+  overrideSettings?: Partial<AiEngineSettings>
+): Promise<{ ok: boolean; latencyMs: number; message: string }> {
+  const t0 = Date.now();
+  try {
+    const cfg: AiEngineSettings = { ...loadAiSettings(), ...(overrideSettings || {}) };
+    const plan = resolveCloudAsrPlan(cfg);
+
+    // Build a clean 0.6s 16kHz test WAV buffer
+    const testSamples = new Float32Array(Math.floor(SAMPLE_RATE * 0.6));
+    for (let i = 0; i < testSamples.length; i++) {
+      testSamples[i] = Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE) * 0.02;
+    }
+    const wavBuf = encodePcm16WavBuffer(testSamples, SAMPLE_RATE);
+    await transcribeSingleWavBufferViaPlan(wavBuf, 0, plan);
+    const ms = Date.now() - t0;
+    return {
+      ok: true,
+      latencyMs: ms,
+      message: `✓ 云端语音识别连通成功！(${plan.providerLabel} · ${plan.model} · ${ms}ms)`,
+    };
+  } catch (err: any) {
+    const ms = Date.now() - t0;
+    const cleanMsg = String(err?.message || '云端 ASR 测试失败').replace(
+      /^\[ASR_CONFIG_REQUIRED\]\s*/,
+      ''
+    );
+    return {
+      ok: false,
+      latencyMs: ms,
+      message: `✗ ${cleanMsg}`,
+    };
+  }
+}
+
 export async function transcribeGroupViaCloudAsr(
   project: ProjectData,
   group: VideoGroup,
@@ -363,17 +622,13 @@ export async function transcribeGroupViaCloudAsr(
   modelUsed: string;
 }> {
   const cfg: AiEngineSettings = { ...loadAiSettings(), ...(overrideSettings || {}) };
-  const effectiveKey = (cfg.asrApiKey || cfg.apiKey || '').trim();
-  const baseUrl = (cfg.asrBaseUrl || 'https://api.siliconflow.cn/v1').trim().replace(/\/+$/, '');
-  const model = (cfg.asrModel || 'FunAudioLLM/SenseVoiceSmall').trim();
+  const plan = resolveCloudAsrPlan(cfg);
 
-  if (!effectiveKey && !baseUrl.includes('127.0.0.1') && !baseUrl.includes('localhost')) {
-    throw new Error(
-      '云端语音识别需要配置 API Key（如硅基流动免费 Key），或直接切换为「本地免Key离线识别」'
-    );
-  }
-
-  const { samples, sourceLabel } = await decodeGroupTimelineAudio16k(project, group, sourceTrack);
+  const { samples, sourceLabel, timelineOffsetSec } = await decodeGroupTimelineAudio16k(
+    project,
+    group,
+    sourceTrack
+  );
   const segments = segmentSpeechByVad(samples);
   if (segments.length === 0) {
     throw new Error('未在音频中检测到有效人声说话片段，请确认音量正常');
@@ -388,36 +643,7 @@ export async function transcribeGroupViaCloudAsr(
       const idx = cursor++;
       const seg = segments[idx];
       const wavBuf = encodePcm16WavBuffer(seg.samples, SAMPLE_RATE);
-
-      const form = new FormData();
-      form.append(
-        'file',
-        new Blob([new Uint8Array(wavBuf)], { type: 'audio/wav' }),
-        `seg_${idx}.wav`
-      );
-      form.append('model', model);
-      if (model.toLowerCase().includes('whisper')) {
-        form.append('language', 'zh');
-      }
-
-      const headers: Record<string, string> = {};
-      if (effectiveKey) {
-        headers.Authorization = `Bearer ${effectiveKey}`;
-      }
-
-      const res = await fetch(`${baseUrl}/audio/transcriptions`, {
-        method: 'POST',
-        headers,
-        body: form,
-      });
-
-      if (!res.ok) {
-        const errTxt = await res.text().catch(() => '');
-        throw new Error(`云端语音识别返回 HTTP ${res.status}: ${errTxt.slice(0, 120)}`);
-      }
-
-      const json: any = await res.json();
-      segmentTexts[idx] = cleanAsrTranscriptText(String(json?.text || ''));
+      segmentTexts[idx] = await transcribeSingleWavBufferViaPlan(wavBuf, idx, plan);
     }
   }
 
@@ -431,7 +657,7 @@ export async function transcribeGroupViaCloudAsr(
     const subCues = buildSyncedSubtitlesFromScript(
       txt,
       Math.max(0.3, seg.endSec - seg.startSec),
-      seg.startSec
+      timelineOffsetSec + seg.startSec
     );
     allCues.push(...subCues);
   }
@@ -440,7 +666,7 @@ export async function transcribeGroupViaCloudAsr(
     cues: allCues,
     segmentCount: segments.length,
     sourceLabel,
-    modelUsed: model,
+    modelUsed: plan.model,
   };
 }
 
@@ -515,7 +741,11 @@ export async function prepareGroupSegmentsForLocalWasm(
   sourceLabel: string;
 }> {
   await ensureLocalWasmRuntimeReady();
-  const { samples, sourceLabel } = await decodeGroupTimelineAudio16k(project, group, sourceTrack);
+  const { samples, sourceLabel, timelineOffsetSec } = await decodeGroupTimelineAudio16k(
+    project,
+    group,
+    sourceTrack
+  );
   const rawSegs = segmentSpeechByVad(samples);
   if (rawSegs.length === 0) {
     throw new Error('未在音轨中检测到有效人声片段，请确认视频原声未静音');
@@ -528,8 +758,8 @@ export async function prepareGroupSegmentsForLocalWasm(
     }
     return {
       index: seg.index,
-      startSec: seg.startSec,
-      endSec: seg.endSec,
+      startSec: Math.round((timelineOffsetSec + seg.startSec) * 100) / 100,
+      endSec: Math.round((timelineOffsetSec + seg.endSec) * 100) / 100,
       pcmFloat32Base64: byteBuf.toString('base64'),
     };
   });

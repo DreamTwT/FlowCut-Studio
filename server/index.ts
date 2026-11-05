@@ -24,6 +24,7 @@ import {
 import {
   prepareGroupSegmentsForLocalWasm,
   serveCachedHfModelFile,
+  testCloudAsrConnection,
   transcribeGroupViaCloudAsr,
 } from './asrService.js';
 import {
@@ -142,6 +143,17 @@ app.post('/api/ai/test', async (req, res) => {
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ ok: false, latencyMs: 0, message: err?.message || '连接测试失败' });
+  }
+});
+
+app.post('/api/ai/test-asr', async (req, res) => {
+  try {
+    const result = await testCloudAsrConnection(req.body?.settings);
+    res.json(result);
+  } catch (err: any) {
+    res
+      .status(500)
+      .json({ ok: false, latencyMs: 0, message: err?.message || '云端语音识别连接测试失败' });
   }
 });
 

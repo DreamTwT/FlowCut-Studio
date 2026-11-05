@@ -540,12 +540,12 @@ export const AssetLibraryPanel: React.FC<Props> = ({
         )}
       </div>
 
-      {/* Scrollable Asset Container — auto-rows-max prevents CSS Grid 0px squish bug! */}
+      {/* Scrollable Asset Container — @container + auto-rows-max prevents squish at any width! */}
       <div
         className={
           viewMode === 'list'
-            ? 'flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5'
-            : `flex-1 min-h-0 overflow-y-auto p-2.5 grid ${
+            ? '@container flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5'
+            : `@container flex-1 min-h-0 overflow-y-auto p-2.5 grid ${
                 wideMode ? 'grid-cols-2 lg:grid-cols-3' : 'grid-cols-2'
               } gap-2 auto-rows-max items-start`
         }
@@ -576,7 +576,7 @@ export const AssetLibraryPanel: React.FC<Props> = ({
                 onClick={() => onPreviewAsset(asset)}
                 className={`${
                   viewMode === 'grid' ? (wideMode ? 'col-span-2 lg:col-span-3' : 'col-span-2') : ''
-                } shrink-0 p-2 rounded-lg border transition cursor-pointer flex items-center justify-between gap-2 ${
+                } shrink-0 p-2 rounded-lg border transition cursor-pointer flex flex-col @[460px]:flex-row @[460px]:items-center justify-between gap-2 ${
                   isSelected
                     ? 'bg-[#1F2536] border-[#00E5FF]'
                     : 'bg-[#1B1E27] border-[#262A38] hover:border-[#3A4054]'
@@ -620,73 +620,89 @@ export const AssetLibraryPanel: React.FC<Props> = ({
                           已截取
                         </span>
                       )}
-                      <span className="whitespace-nowrap hidden sm:inline">
-                        {formatBytes(asset.sizeBytes)}
-                      </span>
                     </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onEditAudio(asset);
-                    }}
-                    className="px-2 py-1 rounded bg-[#252A3A] hover:bg-[#FFB800] text-[#E5E7EB] hover:text-[#111318] text-[10px] font-semibold whitespace-nowrap flex items-center gap-0.5 transition"
-                    title="打开音频可视波形剪辑、截取副歌、淡入淡出与去气口"
-                  >
-                    <Scissors className="w-3 h-3 shrink-0" />
-                    剪辑
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onQuickRemoveBreath(asset);
-                    }}
-                    className="px-1.5 py-1 rounded bg-[#252A3A] hover:bg-emerald-400 text-[#FFB800] hover:text-[#081016] text-[10px] font-semibold whitespace-nowrap flex items-center gap-0.5 transition"
-                    title="一键切除音频中的呼吸换气与长停顿空白"
-                  >
-                    <Zap className="w-3 h-3 shrink-0" />
-                    去气口
-                  </button>
-                  {isVoice ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSetGroupVoiceover(asset.id, false);
-                      }}
-                      className="px-2 py-1 rounded bg-[#FFB800]/20 hover:bg-[#FFB800] text-[#FFB800] hover:text-[#111318] text-[10px] font-bold whitespace-nowrap transition"
-                      title="设为当前选中视频组的口播配音"
-                    >
-                      +设口播
-                    </button>
-                  ) : (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSetGroupBgm(asset.id, false);
-                      }}
-                      className="px-2 py-1 rounded bg-[#00E5FF]/15 hover:bg-[#00E5FF] text-[#00E5FF] hover:text-[#081016] text-[10px] font-bold whitespace-nowrap transition"
-                      title="设为当前选中视频组的背景音乐 BGM"
-                    >
-                      +设BGM
-                    </button>
-                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onDeleteAsset(asset.id);
                     }}
-                    className="p-1 text-[#6B7280] hover:text-red-400"
+                    className="p-1 text-[#6B7280] hover:text-red-400 shrink-0 @[460px]:hidden"
+                    title="移除该音频"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
+                </div>
+
+                <div className="flex items-center justify-between @[460px]:justify-end gap-1.5 pt-1.5 @[460px]:pt-0 border-t border-white/[0.06] @[460px]:border-t-0 shrink-0">
+                  <span className="text-[10px] font-mono text-[#7E8596] whitespace-nowrap @[460px]:mr-1">
+                    {formatBytes(asset.sizeBytes)}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onEditAudio(asset);
+                      }}
+                      className="px-2 py-1 rounded bg-[#252A3A] hover:bg-[#FFB800] text-[#E5E7EB] hover:text-[#111318] text-[10px] font-semibold whitespace-nowrap flex items-center gap-0.5 transition"
+                      title="打开音频可视波形剪辑、截取副歌、淡入淡出与去气口"
+                    >
+                      <Scissors className="w-3 h-3 shrink-0" />
+                      剪辑
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onQuickRemoveBreath(asset);
+                      }}
+                      className="px-1.5 py-1 rounded bg-[#252A3A] hover:bg-emerald-400 text-[#FFB800] hover:text-[#081016] text-[10px] font-semibold whitespace-nowrap flex items-center gap-0.5 transition"
+                      title="一键切除音频中的呼吸换气与长停顿空白"
+                    >
+                      <Zap className="w-3 h-3 shrink-0" />
+                      去气口
+                    </button>
+                    {isVoice ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSetGroupVoiceover(asset.id, false);
+                        }}
+                        className="px-2 py-1 rounded bg-[#FFB800]/20 hover:bg-[#FFB800] text-[#FFB800] hover:text-[#111318] text-[10px] font-bold whitespace-nowrap transition"
+                        title="设为当前选中视频组的口播配音"
+                      >
+                        +设口播
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSetGroupBgm(asset.id, false);
+                        }}
+                        className="px-2 py-1 rounded bg-[#00E5FF]/15 hover:bg-[#00E5FF] text-[#00E5FF] hover:text-[#081016] text-[10px] font-bold whitespace-nowrap transition"
+                        title="设为当前选中视频组的背景音乐 BGM"
+                      >
+                        +设BGM
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteAsset(asset.id);
+                      }}
+                      className="hidden @[460px]:inline-flex p-1 text-[#6B7280] hover:text-red-400"
+                      title="移除该音频"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
             );
           }
 
-          /* LIST DETAIL MODE — Laptop Small-Screen Friendly! Shows full name, dims, duration, tag, and actions! */
+          /* LIST DETAIL MODE — Responsive Container-Query Layout!
+             - Narrow sidebar (< 460px, e.g. 横屏布局): Clean 2-tier layout so title + specs NEVER get squeezed!
+             - Wide sidebar (>= 460px, e.g. 竖屏布局): Smooth single-row layout! */
           if (viewMode === 'list') {
             return (
               <div
@@ -699,7 +715,7 @@ export const AssetLibraryPanel: React.FC<Props> = ({
                 }}
                 onDragEnd={clearDragPayload}
                 onClick={() => onPreviewAsset(asset)}
-                className={`group shrink-0 p-2 rounded-lg border transition cursor-grab active:cursor-grabbing flex items-center gap-2.5 bg-[#1B1E27] ${
+                className={`group shrink-0 p-2 rounded-lg border transition cursor-grab active:cursor-grabbing flex flex-col @[460px]:flex-row @[460px]:items-center gap-2 bg-[#1B1E27] ${
                   isSelected
                     ? 'border-[#FFB800] bg-[#212432]'
                     : isChecked
@@ -707,67 +723,98 @@ export const AssetLibraryPanel: React.FC<Props> = ({
                     : 'border-[#262A38] hover:border-[#3D4358]'
                 }`}
               >
-                {/* Checkbox */}
-                <button
-                  onClick={(e) => toggleCheck(asset.id, e)}
-                  className={`w-4 h-4 rounded flex items-center justify-center shrink-0 transition ${
-                    isChecked ? 'text-[#00E5FF]' : 'text-[#6B7280] hover:text-white'
-                  }`}
-                >
-                  {isChecked ? (
-                    <CheckSquare className="w-4 h-4" />
-                  ) : (
-                    <Square className="w-4 h-4" />
-                  )}
-                </button>
+                {/* Top / Left Main Info Section (Always has full breathing room!) */}
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  {/* Checkbox */}
+                  <button
+                    onClick={(e) => toggleCheck(asset.id, e)}
+                    className={`w-4 h-4 rounded flex items-center justify-center shrink-0 transition ${
+                      isChecked ? 'text-[#00E5FF]' : 'text-[#6B7280] hover:text-white'
+                    }`}
+                  >
+                    {isChecked ? (
+                      <CheckSquare className="w-4 h-4" />
+                    ) : (
+                      <Square className="w-4 h-4" />
+                    )}
+                  </button>
 
-                {/* Crisp Fixed-Size Thumbnail */}
-                <div className="relative w-[72px] h-[48px] rounded-md bg-[#0E1016] overflow-hidden shrink-0 border border-white/10">
-                  {asset.thumbnailUrl ? (
-                    <img
-                      src={asset.thumbnailUrl}
-                      alt=""
-                      className="w-full h-full object-cover pointer-events-none"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[#52586A]">
-                      {asset.type === 'image' ? (
-                        <ImageIcon className="w-4 h-4" />
-                      ) : (
-                        <Film className="w-4 h-4" />
-                      )}
+                  {/* Crisp Fixed-Size Thumbnail */}
+                  <div className="relative w-[72px] h-[48px] rounded-md bg-[#0E1016] overflow-hidden shrink-0 border border-white/10">
+                    {asset.thumbnailUrl ? (
+                      <img
+                        src={asset.thumbnailUrl}
+                        alt=""
+                        className="w-full h-full object-cover pointer-events-none"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[#52586A]">
+                        {asset.type === 'image' ? (
+                          <ImageIcon className="w-4 h-4" />
+                        ) : (
+                          <Film className="w-4 h-4" />
+                        )}
+                      </div>
+                    )}
+                    <span className="absolute bottom-0.5 right-0.5 px-1 rounded bg-black/80 text-[9px] font-mono text-white">
+                      {formatShortSec(netDur)}
+                    </span>
+                  </div>
+
+                  {/* Full Un-Squeezed Title + Resolution */}
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div
+                      className="text-xs font-medium text-[#EEF2F6] leading-snug truncate"
+                      title={asset.name}
+                    >
+                      {asset.name}
                     </div>
-                  )}
-                  <span className="absolute bottom-0.5 right-0.5 px-1 rounded bg-black/80 text-[9px] font-mono text-white">
-                    {formatShortSec(netDur)}
-                  </span>
+                    <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                      <span className="font-mono text-[#8A90A2] whitespace-nowrap">
+                        {asset.width}×{asset.height}
+                      </span>
+                      <span className="px-1 rounded bg-[#252938] text-[#9CA3AF] whitespace-nowrap">
+                        {asset.height >= asset.width ? '竖屏' : '横屏'}
+                      </span>
+                      {trimmedCustom && (
+                        <span className="px-1 rounded bg-[#FFB800]/20 text-[#FFB800] font-medium whitespace-nowrap">
+                          已截取
+                        </span>
+                      )}
+                      {croppedCustom && (
+                        <span className="px-1 rounded bg-[#00E5FF]/20 text-[#00E5FF] font-medium whitespace-nowrap">
+                          已裁切
+                        </span>
+                      )}
+                      <div className="hidden @[460px]:block">
+                        <CustomSelect
+                          size="xs"
+                          stopPropagation
+                          value={(asset.sceneTag || '未分类') as SceneTag}
+                          options={SCENE_TAGS.map((t) => ({ value: t, label: t }))}
+                          onChange={(val) => onChangeAssetTag(asset.id, val as SceneTag)}
+                          menuMinWidth={132}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Top-Right Delete on Narrow Sidebar */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteAsset(asset.id);
+                    }}
+                    className="p-1 text-[#6B7280] hover:text-red-400 shrink-0 @[460px]:hidden"
+                    title="移除该素材"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
 
-                {/* Full Readable Asset Info (2 lines title + resolution & tags!) */}
-                <div className="min-w-0 flex-1 space-y-1">
-                  <div
-                    className="text-xs font-medium text-[#EEF2F6] leading-snug line-clamp-2 break-all"
-                    title={asset.name}
-                  >
-                    {asset.name}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-                    <span className="font-mono text-[#8A90A2] whitespace-nowrap">
-                      {asset.width}×{asset.height}
-                    </span>
-                    <span className="px-1 rounded bg-[#252938] text-[#9CA3AF] whitespace-nowrap">
-                      {asset.height >= asset.width ? '竖屏' : '横屏'}
-                    </span>
-                    {trimmedCustom && (
-                      <span className="px-1 rounded bg-[#FFB800]/20 text-[#FFB800] font-medium whitespace-nowrap">
-                        已截取
-                      </span>
-                    )}
-                    {croppedCustom && (
-                      <span className="px-1 rounded bg-[#00E5FF]/20 text-[#00E5FF] font-medium whitespace-nowrap">
-                        已裁切
-                      </span>
-                    )}
+                {/* Bottom / Right Action Bar */}
+                <div className="flex items-center justify-between @[460px]:justify-end gap-1.5 pt-1.5 @[460px]:pt-0 border-t border-white/[0.06] @[460px]:border-t-0 shrink-0">
+                  <div className="@[460px]:hidden">
                     <CustomSelect
                       size="xs"
                       stopPropagation
@@ -777,57 +824,56 @@ export const AssetLibraryPanel: React.FC<Props> = ({
                       menuMinWidth={132}
                     />
                   </div>
-                </div>
 
-                {/* Right Quick Action Buttons */}
-                <div className="flex items-center gap-1 shrink-0">
-                  {asset.type === 'video' && onSmartSplitVideo && (
+                  <div className="flex items-center gap-1 shrink-0 ml-auto @[460px]:ml-0">
+                    {asset.type === 'video' && onSmartSplitVideo && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSmartSplitVideo(asset);
+                        }}
+                        className="px-2 py-1 rounded bg-[#27221B] hover:bg-[#FFB800] border border-[#FFB800]/35 text-[#FFB800] hover:text-[#111318] text-[10px] font-semibold whitespace-nowrap flex items-center gap-0.5 transition"
+                        title="智能识别镜头切点并拆分为独立分镜"
+                      >
+                        <Zap className="w-3 h-3 shrink-0" />
+                        拆条
+                      </button>
+                    )}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        onSmartSplitVideo(asset);
+                        onTrimAsset(asset);
                       }}
-                      className="px-2 py-1 rounded bg-[#27221B] hover:bg-[#FFB800] border border-[#FFB800]/35 text-[#FFB800] hover:text-[#111318] text-[10px] font-semibold whitespace-nowrap flex items-center gap-0.5 transition"
-                      title="智能识别镜头切点并拆分为独立分镜"
+                      className="px-2 py-1 rounded bg-[#252938] hover:bg-[#FFB800] text-[#E5E7EB] hover:text-[#111318] text-[10px] font-medium whitespace-nowrap flex items-center gap-0.5 transition"
+                      title="裁剪素材时长与构图"
                     >
-                      <Zap className="w-3 h-3 shrink-0" />
-                      拆条
+                      <Scissors className="w-3 h-3 shrink-0" />
+                      裁剪
                     </button>
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTrimAsset(asset);
-                    }}
-                    className="px-2 py-1 rounded bg-[#252938] hover:bg-[#FFB800] text-[#E5E7EB] hover:text-[#111318] text-[10px] font-medium whitespace-nowrap flex items-center gap-0.5 transition"
-                    title="裁剪素材时长与构图"
-                  >
-                    <Scissors className="w-3 h-3 shrink-0" />
-                    裁剪
-                  </button>
-                  {activeGroupId && (
+                    {activeGroupId && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAddAssetsToGroups([asset.id], [activeGroupId], 'append_all');
+                        }}
+                        className="px-2 py-1 rounded bg-[#00E5FF] text-[#081016] font-bold text-[10px] whitespace-nowrap flex items-center gap-0.5 hover:brightness-110 transition"
+                        title="添加到当前选中的视频组"
+                      >
+                        <Plus className="w-3 h-3 stroke-[2.5] shrink-0" />
+                        入组
+                      </button>
+                    )}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        onAddAssetsToGroups([asset.id], [activeGroupId], 'append_all');
+                        onDeleteAsset(asset.id);
                       }}
-                      className="px-2 py-1 rounded bg-[#00E5FF] text-[#081016] font-bold text-[10px] whitespace-nowrap flex items-center gap-0.5 hover:brightness-110 transition"
-                      title="添加到当前选中的视频组"
+                      className="hidden @[460px]:inline-flex p-1 text-[#6B7280] hover:text-red-400"
+                      title="移除该素材"
                     >
-                      <Plus className="w-3 h-3 stroke-[2.5] shrink-0" />
-                      入组
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteAsset(asset.id);
-                    }}
-                    className="p-1 text-[#6B7280] hover:text-red-400"
-                    title="移除该素材"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  </div>
                 </div>
               </div>
             );

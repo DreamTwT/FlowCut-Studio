@@ -905,10 +905,14 @@ export const App: React.FC = () => {
               );
             }
           } catch (err: any) {
-            const msg = String(err?.message || '语音识别失败');
-            if (mode === 'cloud' && msg.includes('API Key')) {
+            const rawMsg = String(err?.message || '语音识别失败');
+            const isConfigIssue =
+              mode === 'cloud' &&
+              (rawMsg.includes('[ASR_CONFIG_REQUIRED]') || rawMsg.includes('API Key'));
+            const cleanMsg = rawMsg.replace(/^\[ASR_CONFIG_REQUIRED\]\s*/, '');
+            if (isConfigIssue) {
               const openCfg = window.confirm(
-                `${msg}\n\n点击【确定】打开 AI 引擎配置面板填入免费硅基流动 Key，或点击【取消】改用旁边的「本地免Key识别」。`
+                `${cleanMsg}\n\n👉 点击【确定】打开 AI 引擎配置面板（可填免费硅基流动 Key 并一键测试）；\n👉 点击【取消】返回后可直接点右侧「本地免Key识别」！`
               );
               if (openCfg) {
                 setTtsModalState({
@@ -918,7 +922,7 @@ export const App: React.FC = () => {
                 });
               }
             } else {
-              alert(msg);
+              alert(cleanMsg);
             }
           } finally {
             setAsrState(null);

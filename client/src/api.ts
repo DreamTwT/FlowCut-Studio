@@ -789,6 +789,24 @@ export async function testAiConnectionApi(
   return res.json();
 }
 
+export async function testCloudAsrApi(
+  settings: Partial<AiEngineSettings>
+): Promise<{ ok: boolean; latencyMs: number; message: string }> {
+  if (isStandaloneBrowserMode) {
+    return {
+      ok: false,
+      latencyMs: 0,
+      message: '纯单文件预览模式请启动完整客户端以测试云端语音识别',
+    };
+  }
+  const res = await fetch('/api/ai/test-asr', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings }),
+  });
+  return res.json();
+}
+
 export async function generateAiScriptsApi(req: AiScriptGenerateRequest): Promise<{
   scripts: GeneratedAdScriptItem[];
   engineUsed: 'cloud_llm' | 'offline_formula';
