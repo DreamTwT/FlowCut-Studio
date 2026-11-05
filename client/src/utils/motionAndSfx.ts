@@ -96,7 +96,7 @@ function playFallbackWebAudioSfx(sfxId: Exclude<SfxPresetId, 'none'>, volume: nu
  * Plays a built-in viral ad SFX cue immediately (used by both Inspector `试听` button
  * and real-time `PlayerMonitor` timeline playback).
  */
-export function playBuiltinSfxPreview(sfxId: SfxPresetId | undefined, volume = 0.7) {
+export function playBuiltinSfxPreview(sfxId: SfxPresetId | undefined, volume = 0.7, playbackRate = 1) {
   if (!sfxId || sfxId === 'none' || !Number.isFinite(volume) || volume <= 0) return;
   const clampedVol = Math.min(1, volume);
 
@@ -115,6 +115,7 @@ export function playBuiltinSfxPreview(sfxId: SfxPresetId | undefined, volume = 0
     }
     const node = base.cloneNode(true) as HTMLAudioElement;
     node.volume = clampedVol;
+    node.playbackRate = Number.isFinite(playbackRate) ? Math.max(0.5, Math.min(2, playbackRate)) : 1;
     node.play().catch(() => {
       playFallbackWebAudioSfx(sfxId, clampedVol);
     });

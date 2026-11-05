@@ -22,9 +22,9 @@ function markup(g: VideoGroup) {
 test('program preview exposes initial motion and warns when transitions are approximated', () => {
   const html = markup(group);
   assert.match(html, /scale\(1\.2400\)/);
-  assert.match(html, /预览硬切 · 转场以导出为准/);
+  assert.match(html, /转场预览 · 成片以导出为准/);
 });
 test('hard-cut sequences do not show the transition warning', () => {
   const hardCut = { ...group, clips: group.clips.map(c => ({ ...c, transition: 'none' as const })) };
-  assert.doesNotMatch(markup(hardCut), /预览硬切 · 转场以导出为准/);
+  assert.doesNotMatch(markup(hardCut), /转场预览 · 成片以导出为准/);
 });

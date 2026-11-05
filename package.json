@@ -1,10 +1,10 @@
 {
   "name": "flowcut-studio",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
-  "description": "FlowCut Pro v2.4.0 - Dynamic Camera Motion, Viral SFX & Synchronized Cover Export",
+  "description": "FlowCut Pro v2.5.0 - Transition Preview and Shared Render Timeline",
   "author": "FlowCut Studio",
   "config": {
     "electron_mirror": "https://cdn.npmmirror.com/binaries/electron/",
@@ -12,7 +12,8 @@
   },
   "scripts": {
     "dev": "tsx server/index.ts",
-    "test": "node --import tsx --test tests/v24.unit.test.ts tests/v24.preview.test.tsx",
+    "test": "node --import tsx --test tests/v24.unit.test.ts tests/v24.preview.test.tsx tests/v25.timeline.test.ts",
+    "test:browser": "node --import tsx --test tests/v25.browser.test.ts",
     "test:integration": "node --import tsx --test tests/v24.integration.test.ts",
     "build:client": "vite build",
     "build:server": "esbuild server/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=runtime/server.cjs --external:vite --external:sharp --external:ffmpeg-static --external:ffprobe-static --external:bufferutil --external:utf-8-validate",
@@ -45,6 +46,7 @@
     "lucide-react": "^0.475.0",
     "msedge-tts": "^2.1.1",
     "multer": "^1.4.5-lts.1",
+    "playwright": "1.57.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.0.9",

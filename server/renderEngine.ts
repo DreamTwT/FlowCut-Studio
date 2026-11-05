@@ -6,7 +6,8 @@ import archiver from 'archiver';
 import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { EXPORTS_DIR, FFMPEG_BIN, refreshMediaBinaries, UPLOADS_DIR } from './paths.js';
-import { ensureBuiltinSfxReady, getSfxFilePath, isBuiltinSfxId } from './sfxGenerator.js';
+import { ensureBuiltinSfxReady, getSfxFilePath } from './sfxGenerator.js';
+import { buildTransitionTimeline, buildTimelineSfxEvents, getMasterSpeedFactor } from '../shared/previewTimeline.js';
 import {
   buildVideoEncoderArgs,
   resolveEncoderForRender,
@@ -388,8 +389,8 @@ async function renderSingleGroup(
 
   // Sequence concatenation / transitions (tracking exact clip start times for Viral SFX cues)
   const N = validClips.length;
-  let totalDur = effDurs[0];
-  const clipStartTimesSec: number[] = [0];
+  const timeline = buildTransitionTimeline(validClips.map((entry, i) => ({ duration: effDurs[i], transition: entry.clip.transition })));
+  const totalDur = timeline.totalDuration;
 
   const hasAnyTransition = validClips.some(
     (entry, idx) => idx < N - 1 && entry.clip.transition && entry.clip.transition !== 'none'
@@ -398,48 +399,37 @@ async function renderSingleGroup(
   if (N === 1) {
     filterParts.push(`[v0]null[vseq]`, `[a0]anull[aseq]`);
   } else if (!hasAnyTransition) {
-    let acc = 0;
-    for (let i = 1; i < N; i++) {
-      acc += effDurs[i - 1];
-      clipStartTimesSec.push(acc);
-    }
     const pairs = validClips.map((_, idx) => `[v${idx}][a${idx}]`).join('');
     filterParts.push(`${pairs}concat=n=${N}:v=1:a=1[vseq][aseq]`);
-    totalDur = effDurs.reduce((s, d) => s + d, 0);
   } else {
     let currV = '[v0]';
     let currA = '[a0]';
-    let cumDur = effDurs[0];
 
     for (let i = 1; i < N; i++) {
-      const tr = validClips[i - 1].clip.transition;
+      const segment = timeline.segments[i];
+      const tr = segment.transitionIn;
       const outV = i === N - 1 ? '[vseq]' : `[vx${i}]`;
       const outA = i === N - 1 ? '[aseq]' : `[ax${i}]`;
 
-      if (!tr || tr === 'none' || cumDur < 0.45 || effDurs[i] < 0.45) {
-        clipStartTimesSec.push(cumDur);
+      if (!segment.overlapIn) {
         const tmpV = `[vcat_tmp_${i}]`;
         filterParts.push(
           `${currV}${currA}[v${i}][a${i}]concat=n=2:v=1:a=1${tmpV}${outA}`,
           `${tmpV}fps=${fps}${outV}`
         );
-        cumDur += effDurs[i];
       } else {
-        const trDur = Math.min(0.35, cumDur * 0.3, effDurs[i] * 0.3);
-        const offset = Math.max(0.05, cumDur - trDur);
-        clipStartTimesSec.push(offset);
+        const trDur = segment.overlapIn;
+        const offset = segment.start;
         const tmpV = `[vxf_tmp_${i}]`;
         filterParts.push(
           `${currV}[v${i}]xfade=transition=${tr}:duration=${trDur.toFixed(3)}:offset=${offset.toFixed(3)}${tmpV}`,
           `${tmpV}fps=${fps}${outV}`,
           `${currA}[a${i}]acrossfade=d=${trDur.toFixed(3)}:c1=tri:c2=tri${outA}`
         );
-        cumDur = cumDur + effDurs[i] - trDur;
       }
       currV = outV;
       currA = outA;
     }
-    totalDur = cumDur;
   }
 
   let nextInputIdx = N;
@@ -716,51 +706,7 @@ async function renderSingleGroup(
   const sfxVol = Math.min(1.5, Math.max(0, Number(group.sfx?.volume ?? 0.65)));
   if (group.sfx?.enabled && sfxVol > 0.01) {
     ensureBuiltinSfxReady();
-    const rawEvents: { sfxId: Exclude<SfxPresetId, 'none'>; timeSec: number; gainMul: number }[] = [];
-
-    if (group.sfx.hookSfxId && group.sfx.hookSfxId !== 'none') {
-      rawEvents.push({ sfxId: group.sfx.hookSfxId, timeSec: 0.03, gainMul: 1.0 });
-    }
-
-    const hasCtaSfx = Boolean(group.sfx.ctaSfxId && group.sfx.ctaSfxId !== 'none');
-    if (group.sfx.transitionSfxId && group.sfx.transitionSfxId !== 'none' && N >= 2) {
-      for (let cIdx = 1; cIdx < N; cIdx++) {
-        // Avoid stacking transition SFX + CTA SFX on the exact same final cut
-        if (cIdx === N - 1 && hasCtaSfx) continue;
-        if (rawEvents.length >= 15) break;
-        const cutT = clipStartTimesSec[cIdx] ?? 0;
-        if (cutT > 0.12 && cutT < totalDur - 0.12) {
-          rawEvents.push({
-            sfxId: group.sfx.transitionSfxId,
-            timeSec: Math.max(0.02, cutT - 0.04),
-            gainMul: 0.88,
-          });
-        }
-      }
-    }
-
-    if (hasCtaSfx && group.sfx.ctaSfxId && group.sfx.ctaSfxId !== 'none') {
-      if (N >= 2) {
-        const lastCut = clipStartTimesSec[N - 1] ?? Math.max(0.4, totalDur - 1.5);
-        if (lastCut < totalDur - 0.12) {
-          rawEvents.push({
-            sfxId: group.sfx.ctaSfxId,
-            timeSec: Math.max(0.12, lastCut + 0.02),
-            gainMul: 1.0,
-          });
-        }
-      } else if (totalDur >= 2.0) {
-        rawEvents.push({
-          sfxId: group.sfx.ctaSfxId,
-          timeSec: Math.max(0.5, totalDur - 1.4),
-          gainMul: 1.0,
-        });
-      }
-    }
-
-    const cappedEvents = rawEvents
-      .filter((ev) => isBuiltinSfxId(ev.sfxId))
-      .slice(0, 16);
+    const cappedEvents = buildTimelineSfxEvents(group.sfx, timeline);
 
     if (cappedEvents.length > 0) {
       const groupedBySfx = new Map<Exclude<SfxPresetId, 'none'>, typeof cappedEvents>();
@@ -821,11 +767,7 @@ async function renderSingleGroup(
   // DIMENSION 2 & 3: Audio Chromaprint Dispersion + Lockstep Master Tempo Jitter
   // Applied AFTER subtitle burn-in so voiceover & dynamic subtitles stay 100% synced!
   // =========================================================================
-  const masterSpeedPct = group.dedup?.enabled
-    ? Math.max(-4.5, Math.min(4.5, Number(group.dedup.speedJitterPct || 0)))
-    : 0;
-  const masterSpeedFactor =
-    Math.abs(masterSpeedPct) >= 0.15 ? 1 + masterSpeedPct / 100 : 1.0;
+  const masterSpeedFactor = getMasterSpeedFactor(group.dedup);
   const finalOutDur = Math.max(0.2, totalDur / masterSpeedFactor);
 
   // Video Finalization Pad

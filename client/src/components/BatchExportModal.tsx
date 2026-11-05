@@ -209,7 +209,7 @@ export const BatchExportModal: React.FC<Props> = ({
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <span>FFmpeg 批量生产渲染中心</span>
                 <span className="px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] text-[10px] font-mono">
-                  v2.4 GPU加速引擎
+                  v2.5 GPU加速引擎
                 </span>
               </h3>
               <p className="text-[11px] text-[#8A90A2]">

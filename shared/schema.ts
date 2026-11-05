@@ -1,3 +1,5 @@
+import { buildTransitionTimeline } from './timeline.js';
+
 export type AssetType = 'video' | 'image' | 'audio';
 
 export type AudioRole = 'bgm' | 'voiceover';
@@ -626,18 +628,9 @@ export function getClipEffectiveDuration(clip: TimelineClip): number {
 }
 
 export function getGroupTotalDuration(group: VideoGroup): number {
-  if (!group.clips.length) return 0;
-  let total = 0;
-  for (let i = 0; i < group.clips.length; i++) {
-    const d = getClipEffectiveDuration(group.clips[i]);
-    total += d;
-    if (i < group.clips.length - 1 && group.clips[i].transition !== 'none') {
-      const nextD = getClipEffectiveDuration(group.clips[i + 1]);
-      const trDur = Math.min(0.35, d * 0.3, nextD * 0.3);
-      total -= trDur;
-    }
-  }
-  return Math.max(0, total);
+  return buildTransitionTimeline(group.clips.map(clip => ({
+    duration: getClipEffectiveDuration(clip), transition: clip.transition,
+  }))).totalDuration;
 }
 
 export function isCustomCropped(crop?: CropBox): boolean {

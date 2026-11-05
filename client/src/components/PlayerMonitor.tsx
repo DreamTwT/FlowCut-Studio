@@ -20,7 +20,9 @@ import {
   TimelineClip,
   VideoGroup,
 } from '@shared/schema';
-import { CroppedMediaFrame } from './CroppedMediaFrame';
+import { SequenceClipLayer } from './SequenceClipLayer';
+import { buildTransitionTimeline, buildTimelineSfxEvents, activeTimelineIndex, getMasterSpeedFactor } from '@shared/previewTimeline';
+import { getPreviewLayers } from '../utils/transitionPreview';
 import { OverlayPreviewLayer } from './OverlayPreviewLayer';
 import { formatDuration, formatShortSec } from '../utils/format';
 import { playBuiltinSfxPreview } from '../utils/motionAndSfx';
@@ -60,33 +62,28 @@ export const PlayerMonitor: React.FC<Props> = ({
   onOpenTrimClip,
   onSelectClip,
 }) => {
-  const [progClipIdx, setProgClipIdx] = useState(0);
-  const [progClipElapsed, setProgClipElapsed] = useState(0);
+  const [globalProgramTime, setGlobalProgramTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewMuted, setPreviewMuted] = useState(false);
-
   const [srcTime, setSrcTime] = useState(0);
   const [srcPlaying, setSrcPlaying] = useState(false);
-
-  const progVideoRef = useRef<HTMLVideoElement | null>(null);
   const bgmAudioRef = useRef<HTMLAudioElement | null>(null);
   const voAudioRef = useRef<HTMLAudioElement | null>(null);
   const srcMediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const stageHostRef = useRef<HTMLDivElement | null>(null);
-  const imageElapsedRef = useRef(0);
-  const lastSfxKeyRef = useRef<string>('');
-  const lastSingleCtaKeyRef = useRef<string>('');
+  const programTimeRef = useRef(0);
+  const sfxCursorRef = useRef(0);
+  const internallySelectedRef = useRef<string | null>(null);
+  const pendingAudioRef = useRef(new WeakSet<HTMLAudioElement>());
+  const desiredAudioRef = useRef(new WeakMap<HTMLAudioElement, boolean>());
   const [stageBounds, setStageBounds] = useState<{ w: number; h: number }>({ w: 360, h: 640 });
 
-  // Measure available stage container with ResizeObserver so 9:16, 16:9, 1:1 ALWAYS maximize cleanly without overflow!
   useEffect(() => {
     const el = stageHostRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
-      if (rect && rect.width > 20 && rect.height > 20) {
-        setStageBounds({ w: rect.width, h: rect.height });
-      }
+      if (rect && rect.width > 20 && rect.height > 20) setStageBounds({ w: rect.width, h: rect.height });
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -94,47 +91,80 @@ export const PlayerMonitor: React.FC<Props> = ({
 
   const playableClips = useMemo(() => {
     if (!activeGroup) return [];
-    return activeGroup.clips
-      .map((clip) => {
-        const asset = assetMap.get(clip.assetId);
-        if (!asset || asset.type === 'audio') return null;
-        return { clip, asset, effDur: getClipEffectiveDuration(clip) };
-      })
-      .filter((x): x is NonNullable<typeof x> => Boolean(x));
+    return activeGroup.clips.map((clip) => {
+      const asset = assetMap.get(clip.assetId);
+      if (!asset || asset.type === 'audio') return null;
+      return { clip, asset, effDur: getClipEffectiveDuration(clip) };
+    }).filter((x): x is NonNullable<typeof x> => Boolean(x));
   }, [activeGroup, assetMap]);
+  const timeline = useMemo(() => buildTransitionTimeline(playableClips.map(entry => ({
+    duration: entry.effDur, transition: entry.clip.transition,
+  }))), [playableClips]);
+  const totalProgramDur = timeline.totalDuration;
+  const masterSpeedFactor = getMasterSpeedFactor(activeGroup?.dedup);
+  const progClipIdx = activeTimelineIndex(timeline.segments, globalProgramTime);
+  const currentEntry = playableClips[progClipIdx] || null;
+  const previewLayers = getPreviewLayers(timeline.segments, globalProgramTime);
+  const bgmAsset = activeGroup?.bgmAssetId ? assetMap.get(activeGroup.bgmAssetId) || null : null;
+  const voAsset = activeGroup?.voiceoverAssetId ? assetMap.get(activeGroup.voiceoverAssetId) || null : null;
+  const sfxEvents = useMemo(() => buildTimelineSfxEvents(activeGroup?.sfx, timeline), [activeGroup?.sfx, timeline]);
 
-  const totalProgramDur = useMemo(
-    () => playableClips.reduce((acc, item) => acc + item.effDur, 0),
-    [playableClips]
-  );
+  const seekProgramGlobal = (requested: number, select = true) => {
+    if (!timeline.segments.length) return;
+    const target = Math.max(0, Math.min(Math.max(0, totalProgramDur - 0.001), requested));
+    programTimeRef.current = target;
+    sfxCursorRef.current = target;
+    setGlobalProgramTime(target);
+    const idx = activeTimelineIndex(timeline.segments, target);
+    const id = playableClips[idx]?.clip.id;
+    if (select && id && id !== selectedClipId) {
+      internallySelectedRef.current = id;
+      onSelectClip(id);
+    }
+  };
 
   useEffect(() => {
-    if (!selectedClipId || mode !== 'program') return;
-    const idx = playableClips.findIndex((x) => x.clip.id === selectedClipId);
-    if (idx >= 0 && idx !== progClipIdx) {
-      setIsPlaying(false);
-      setProgClipIdx(idx);
-      setProgClipElapsed(0);
+    programTimeRef.current = 0;
+    sfxCursorRef.current = 0;
+    setGlobalProgramTime(0);
+    setIsPlaying(false);
+  }, [activeGroup?.id]);
+
+  // A click on the board is an explicit seek; selections produced by playback are not.
+  useEffect(() => {
+    if (mode !== 'program' || !selectedClipId) return;
+    if (internallySelectedRef.current === selectedClipId) {
+      internallySelectedRef.current = null;
+      return;
     }
-  }, [selectedClipId]);
+    const idx = playableClips.findIndex(entry => entry.clip.id === selectedClipId);
+    if (idx >= 0 && idx !== activeTimelineIndex(timeline.segments, programTimeRef.current)) {
+      setIsPlaying(false);
+      seekProgramGlobal(timeline.segments[idx].start, false);
+    }
+  }, [selectedClipId, activeGroup?.id, mode]);
 
   useEffect(() => {
-    if (progClipIdx >= playableClips.length) {
-      setProgClipIdx(Math.max(0, playableClips.length - 1));
-      setProgClipElapsed(0);
+    if (!isPlaying || mode !== 'program' || !currentEntry || selectedClipId === currentEntry.clip.id) return;
+    internallySelectedRef.current = currentEntry.clip.id;
+    onSelectClip(currentEntry.clip.id);
+  }, [isPlaying, mode, currentEntry?.clip.id, selectedClipId]);
+
+  useEffect(() => {
+    if (programTimeRef.current >= totalProgramDur && totalProgramDur > 0) {
+      programTimeRef.current = 0;
+      sfxCursorRef.current = 0;
+      setGlobalProgramTime(0);
       setIsPlaying(false);
     }
-  }, [playableClips.length, progClipIdx]);
-
+  }, [totalProgramDur]);
   useEffect(() => {
     setSrcPlaying(false);
     setSrcTime(sourceAsset?.defaultTrimStart || 0);
   }, [sourceAsset?.id]);
-
   useEffect(() => {
     if (mode === 'source') {
       setIsPlaying(false);
-      progVideoRef.current?.pause();
       bgmAudioRef.current?.pause();
       voAudioRef.current?.pause();
     } else {
@@ -143,258 +173,85 @@ export const PlayerMonitor: React.FC<Props> = ({
     }
   }, [mode]);
 
-  const currentEntry = playableClips[progClipIdx] || null;
-  const bgmAsset = activeGroup?.bgmAssetId ? assetMap.get(activeGroup.bgmAssetId) || null : null;
-  const voAsset = activeGroup?.voiceoverAssetId
-    ? assetMap.get(activeGroup.voiceoverAssetId) || null
-    : null;
-
-  // Sync BGM + Voiceover (with trim range, speed, delay, and real-time ducking!)
+  // One monotonic clock drives both clips during overlaps, subtitles and SFX.
   useEffect(() => {
-    const bgmEl = bgmAudioRef.current;
-    const voEl = voAudioRef.current;
-
-    if (mode !== 'program' || !isPlaying || playableClips.length === 0) {
-      bgmEl?.pause();
-      voEl?.pause();
-      return;
-    }
-
-    if (bgmEl && bgmAsset) {
-      const bgmStart = activeGroup?.bgmTrimStart ?? bgmAsset.defaultTrimStart ?? 0;
-      const bgmSpd = activeGroup?.bgmSpeed ?? bgmAsset.defaultSpeed ?? 1;
-      bgmEl.playbackRate = bgmSpd;
-      if (bgmEl.currentTime < bgmStart) {
-        bgmEl.currentTime = bgmStart;
-      }
-      const duckFactor =
-        voAsset && activeGroup?.bgmDucking !== false ? 0.42 : 1.0;
-      bgmEl.volume = previewMuted
-        ? 0
-        : Math.min(1, Math.max(0, (activeGroup?.bgmVolume ?? 0.35) * duckFactor));
-      bgmEl.play().catch(() => {});
-    }
-
-    if (voEl && voAsset) {
-      const voStart = activeGroup?.voiceoverTrimStart ?? voAsset.defaultTrimStart ?? 0;
-      const voSpd = activeGroup?.voiceoverSpeed ?? voAsset.defaultSpeed ?? 1;
-      voEl.playbackRate = voSpd;
-      voEl.volume = previewMuted
-        ? 0
-        : Math.min(1, Math.max(0, activeGroup?.voiceoverVolume ?? 1.0));
-      if (voEl.currentTime < voStart) {
-        voEl.currentTime = voStart;
-      }
-      voEl.play().catch(() => {});
-    }
-  }, [
-    isPlaying,
-    mode,
-    activeGroup?.bgmAssetId,
-    activeGroup?.bgmVolume,
-    activeGroup?.bgmTrimStart,
-    activeGroup?.bgmSpeed,
-    activeGroup?.bgmDucking,
-    activeGroup?.voiceoverAssetId,
-    activeGroup?.voiceoverVolume,
-    activeGroup?.voiceoverTrimStart,
-    activeGroup?.voiceoverSpeed,
-    previewMuted,
-    playableClips.length,
-    bgmAsset,
-    voAsset,
-  ]);
-
-  const advanceToNextClip = () => {
-    if (progClipIdx < playableClips.length - 1) {
-      const nextIdx = progClipIdx + 1;
-      setProgClipIdx(nextIdx);
-      setProgClipElapsed(0);
-      onSelectClip(playableClips[nextIdx].clip.id);
-    } else {
-      setIsPlaying(false);
-      setProgClipIdx(0);
-      setProgClipElapsed(0);
-      if (bgmAudioRef.current) {
-        bgmAudioRef.current.pause();
-        bgmAudioRef.current.currentTime = 0;
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (mode !== 'program' || !currentEntry) return;
-    const { clip, asset, effDur } = currentEntry;
-
-    if (asset.type === 'video') {
-      const v = progVideoRef.current;
-      if (!v) return;
-      const spd = Math.min(2, Math.max(0.5, clip.speed || 1));
-      v.playbackRate = spd;
-      const gain =
-        previewMuted || clip.muted
-          ? 0
-          : Math.min(1, (clip.volume ?? 1) * (activeGroup?.clipMasterVolume ?? 1));
-      v.volume = gain;
-
-      const targetVidTime = (clip.trimStart || 0) + progClipElapsed * spd;
-      if (Math.abs(v.currentTime - targetVidTime) > 0.25) {
-        v.currentTime = targetVidTime;
-      }
-
-      if (isPlaying) {
-        v.play().catch(() => setIsPlaying(false));
-        // Smooth 60fps progress updates when dynamic camera motion is active on video clips
-        if (clip.motion && clip.motion !== 'none') {
-          let rafId = 0;
-          const t0 = clip.trimStart || 0;
-          const tickVideoMotion = () => {
-            if (progVideoRef.current && !progVideoRef.current.paused) {
-              const elapsed = Math.max(0, (progVideoRef.current.currentTime - t0) / spd);
-              setProgClipElapsed(elapsed);
-            }
-            rafId = requestAnimationFrame(tickVideoMotion);
-          };
-          rafId = requestAnimationFrame(tickVideoMotion);
-          return () => cancelAnimationFrame(rafId);
-        }
-      } else {
-        v.pause();
-      }
-      return;
-    }
-
-    if (asset.type === 'image' && isPlaying) {
-      let lastTs = performance.now();
-      let rafId = 0;
-      imageElapsedRef.current = progClipElapsed;
-
-      const tick = (now: number) => {
-        const dt = (now - lastTs) / 1000;
-        lastTs = now;
-        imageElapsedRef.current += dt;
-        if (imageElapsedRef.current >= effDur) {
-          advanceToNextClip();
-          return;
-        }
-        setProgClipElapsed(imageElapsedRef.current);
-        rafId = requestAnimationFrame(tick);
-      };
-      rafId = requestAnimationFrame(tick);
-      return () => cancelAnimationFrame(rafId);
-    }
-  }, [
-    mode,
-    currentEntry?.clip.id,
-    currentEntry?.clip.speed,
-    currentEntry?.clip.muted,
-    currentEntry?.clip.volume,
-    currentEntry?.clip.motion,
-    activeGroup?.clipMasterVolume,
-    isPlaying,
-    previewMuted,
-  ]);
-
-  // Real-time Viral SFX playback during Program Monitor preview
-  useEffect(() => {
-    if (mode !== 'program' || !isPlaying || previewMuted || !activeGroup?.sfx?.enabled) {
-      if (!isPlaying && progClipIdx === 0 && progClipElapsed < 0.05) {
-        lastSfxKeyRef.current = '';
-        lastSingleCtaKeyRef.current = '';
-      }
-      return;
-    }
-    const sfx = activeGroup.sfx;
-    const vol = Math.min(1, Math.max(0, sfx.volume ?? 0.65));
-    if (vol <= 0.01 || playableClips.length === 0) return;
-
-    const key = `${activeGroup.id}_${progClipIdx}`;
-    if (playableClips.length === 1 && currentEntry && currentEntry.effDur >= 2 &&
-        progClipElapsed >= Math.max(0.5, currentEntry.effDur - 1.4) &&
-        lastSingleCtaKeyRef.current !== key) {
-      lastSingleCtaKeyRef.current = key;
-      playBuiltinSfxPreview(sfx.ctaSfxId, vol);
-    }
-    if (lastSfxKeyRef.current === key) return;
-
-    if (progClipIdx === 0) {
-      if (progClipElapsed < 0.28 && sfx.hookSfxId && sfx.hookSfxId !== 'none') {
-        lastSfxKeyRef.current = key;
-        playBuiltinSfxPreview(sfx.hookSfxId, vol);
-      }
-      return;
-    }
-
-    lastSfxKeyRef.current = key;
-    const isLast = progClipIdx === playableClips.length - 1;
-    if (isLast && sfx.ctaSfxId && sfx.ctaSfxId !== 'none') {
-      playBuiltinSfxPreview(sfx.ctaSfxId, vol);
-    } else if (sfx.transitionSfxId && sfx.transitionSfxId !== 'none') {
-      playBuiltinSfxPreview(sfx.transitionSfxId, vol * 0.88);
-    }
-  }, [
-    mode,
-    isPlaying,
-    previewMuted,
-    progClipIdx,
-    progClipElapsed,
-    currentEntry?.effDur,
-    activeGroup?.id,
-    activeGroup?.sfx,
-    playableClips.length,
-  ]);
-
-  const handleProgramVideoTimeUpdate = () => {
-    const v = progVideoRef.current;
-    if (!v || !currentEntry) return;
-    const { clip } = currentEntry;
-    const spd = Math.min(2, Math.max(0.5, clip.speed || 1));
-    const t0 = clip.trimStart || 0;
-    const t1 = Math.max(t0 + 0.2, clip.trimEnd || currentEntry.asset.duration);
-    const elapsed = Math.max(0, (v.currentTime - t0) / spd);
-    setProgClipElapsed(elapsed);
-
-    if (v.currentTime >= t1 - 0.03) {
-      advanceToNextClip();
-    }
-  };
-
-  const globalProgramTime = useMemo(() => {
-    let sum = 0;
-    for (let i = 0; i < progClipIdx && i < playableClips.length; i++) {
-      sum += playableClips[i].effDur;
-    }
-    return Math.min(totalProgramDur, sum + progClipElapsed);
-  }, [playableClips, progClipIdx, progClipElapsed, totalProgramDur]);
-
-  const seekProgramGlobal = (targetSec: number) => {
-    let acc = 0;
-    for (let i = 0; i < playableClips.length; i++) {
-      const d = playableClips[i].effDur;
-      if (targetSec <= acc + d || i === playableClips.length - 1) {
-        const within = Math.max(0, Math.min(d - 0.02, targetSec - acc));
-        setProgClipIdx(i);
-        setProgClipElapsed(within);
-        imageElapsedRef.current = within;
-        // Do not replay a cue when seeking into the middle of a clip; allow it on rewind.
-        const key = `${activeGroup?.id}_${i}`;
-        lastSfxKeyRef.current = within < 0.05 ? '' : key;
-        const ctaTime = Math.max(0.5, d - 1.4);
-        lastSingleCtaKeyRef.current = within < ctaTime ? '' : key;
-        onSelectClip(playableClips[i].clip.id);
-        const entry = playableClips[i];
-        if (i === progClipIdx && entry.asset.type === 'video' && progVideoRef.current) {
-          const spd = entry.clip.speed || 1;
-          progVideoRef.current.currentTime = (entry.clip.trimStart || 0) + within * spd;
-        }
-        if (bgmAudioRef.current && bgmAsset) {
-          bgmAudioRef.current.currentTime = targetSec % Math.max(1, bgmAsset.duration);
-        }
+    if (!isPlaying || mode !== 'program' || totalProgramDur <= 0) return;
+    let last = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const next = programTimeRef.current + Math.max(0, now - last) / 1000 * masterSpeedFactor;
+      last = now;
+      if (next >= totalProgramDur) {
+        programTimeRef.current = 0;
+        sfxCursorRef.current = 0;
+        setGlobalProgramTime(0);
+        setIsPlaying(false);
         return;
       }
-      acc += d;
+      programTimeRef.current = next;
+      setGlobalProgramTime(next);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isPlaying, mode, totalProgramDur, masterSpeedFactor]);
+
+  useEffect(() => {
+    const previous = sfxCursorRef.current;
+    sfxCursorRef.current = globalProgramTime;
+    if (mode !== 'program' || !isPlaying || previewMuted || !activeGroup?.sfx?.enabled) return;
+    const volume = Math.min(1, Math.max(0, activeGroup.sfx.volume ?? 0.65));
+    if (volume <= 0.01 || globalProgramTime < previous) return;
+    for (const event of sfxEvents) {
+      if (event.timeSec > previous && event.timeSec <= globalProgramTime) {
+        playBuiltinSfxPreview(event.sfxId, volume * event.gainMul, masterSpeedFactor);
+      }
     }
-  };
+  }, [globalProgramTime, isPlaying, mode, previewMuted, activeGroup?.sfx, sfxEvents, masterSpeedFactor]);
+
+  // Approximate HTML audio playback, including trim, looping, delay and fades, against the same clock.
+  useEffect(() => {
+    const sync = (el: HTMLAudioElement | null, target: number, speed: number, volume: number, shouldPlay: boolean) => {
+      if (!el) return;
+      el.playbackRate = Math.max(0.25, Math.min(4, speed * masterSpeedFactor));
+      el.volume = Math.max(0, Math.min(1, volume));
+      if (el.readyState >= 1 && Math.abs(el.currentTime - target) > 0.16) {
+        try { el.currentTime = target; } catch { /* metadata not yet available */ }
+      }
+      desiredAudioRef.current.set(el, shouldPlay);
+      if (shouldPlay && el.paused && !pendingAudioRef.current.has(el)) {
+        pendingAudioRef.current.add(el);
+        void el.play().then(() => { if (!desiredAudioRef.current.get(el)) el.pause(); }).catch(() => {}).finally(() => pendingAudioRef.current.delete(el));
+      } else if (!shouldPlay && !el.paused) el.pause();
+    };
+    const playing = mode === 'program' && isPlaying;
+    const delay = Math.max(0, activeGroup?.voiceoverDelaySec || 0);
+    let voiceActive = false;
+    if (voAsset) {
+      const start = Math.max(0, activeGroup?.voiceoverTrimStart ?? voAsset.defaultTrimStart ?? 0);
+      const end = Math.max(start + 0.15, Math.min(voAsset.duration, activeGroup?.voiceoverTrimEnd || voAsset.defaultTrimEnd || voAsset.duration));
+      const speed = Math.max(0.5, Math.min(2, activeGroup?.voiceoverSpeed ?? voAsset.defaultSpeed ?? 1));
+      const position = start + Math.max(0, globalProgramTime - delay) * speed;
+      voiceActive = globalProgramTime >= delay && position < end;
+      sync(voAudioRef.current, Math.min(end, position), speed, previewMuted ? 0 : (activeGroup?.voiceoverVolume ?? 1), playing && voiceActive);
+    }
+    if (bgmAsset) {
+      const start = Math.max(0, activeGroup?.bgmTrimStart ?? bgmAsset.defaultTrimStart ?? 0);
+      const end = Math.max(start + 0.2, Math.min(bgmAsset.duration, activeGroup?.bgmTrimEnd || bgmAsset.defaultTrimEnd || bgmAsset.duration));
+      const speed = Math.max(0.5, Math.min(2, activeGroup?.bgmSpeed ?? bgmAsset.defaultSpeed ?? 1));
+      const span = Math.max(0.01, end - start);
+      const consumed = globalProgramTime * speed;
+      const loop = activeGroup?.bgmLoop !== false;
+      const position = start + (loop ? consumed % span : Math.min(span, consumed));
+      const fadeIn = Math.min(totalProgramDur * 0.4, Math.max(0, activeGroup?.bgmFadeInSec ?? bgmAsset.fadeInSec ?? 0));
+      const fadeOut = Math.min(totalProgramDur * 0.45, Math.max(0, activeGroup?.bgmFadeOutSec ?? (activeGroup?.audioFadeOut && totalProgramDur > 1.5 ? 1.2 : 0)));
+      const envelope = (fadeIn > 0.03 ? Math.min(1, globalProgramTime / fadeIn) : 1) *
+        (fadeOut > 0.03 ? Math.min(1, Math.max(0, (totalProgramDur - globalProgramTime) / fadeOut)) : 1);
+      const duck = voiceActive && activeGroup?.bgmDucking !== false ? 0.42 : 1;
+      sync(bgmAudioRef.current, position, speed, previewMuted ? 0 : (activeGroup?.bgmVolume ?? 0.35) * envelope * duck,
+        playing && (loop || consumed < span));
+    }
+  }, [globalProgramTime, mode, isPlaying, previewMuted, activeGroup, bgmAsset, voAsset, totalProgramDur, masterSpeedFactor]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -404,9 +261,7 @@ export const PlayerMonitor: React.FC<Props> = ({
         e.preventDefault();
         if (mode === 'program') {
           if (playableClips.length > 0) setIsPlaying((p) => !p);
-        } else if (sourceAsset) {
-          toggleSourcePlay();
-        }
+        } else if (sourceAsset) toggleSourcePlay();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -417,9 +272,7 @@ export const PlayerMonitor: React.FC<Props> = ({
     const el = srcMediaRef.current;
     if (!el || !sourceAsset) return;
     if (el.paused) {
-      if (el.currentTime >= (sourceAsset.defaultTrimEnd || sourceAsset.duration) - 0.05) {
-        el.currentTime = sourceAsset.defaultTrimStart || 0;
-      }
+      if (el.currentTime >= (sourceAsset.defaultTrimEnd || sourceAsset.duration) - 0.05) el.currentTime = sourceAsset.defaultTrimStart || 0;
       el.play().then(() => setSrcPlaying(true)).catch(() => {});
     } else {
       el.pause();
@@ -554,8 +407,8 @@ export const PlayerMonitor: React.FC<Props> = ({
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {playableClips.some((entry, i) => i < playableClips.length - 1 && entry.clip.transition !== 'none') && (
-                  <span className="text-[10px] text-amber-300 whitespace-nowrap" title="预览按硬切播放；导出会应用转场重叠，成片时长及音效时间点可能不同。">
-                    预览硬切 · 转场以导出为准
+                  <span className="text-[10px] text-amber-300 whitespace-nowrap" title="浏览器预览采用近似过渡，画面、混音及防重效果以 FFmpeg 导出为准。">
+                    转场预览 · 成片以导出为准
                   </span>
                 )}
                 <span className="font-mono text-[10px] text-[#6B7280] whitespace-nowrap">{aspectRatio}</span>
@@ -631,30 +484,13 @@ export const PlayerMonitor: React.FC<Props> = ({
                     : undefined
                 }
               >
-                <CroppedMediaFrame
-                  key={currentEntry.clip.id}
-                  asset={currentEntry.asset}
-                  crop={currentEntry.clip.crop}
-                  fitMode={currentEntry.clip.fitMode}
-                  aspectRatio={aspectRatio}
-                  motion={currentEntry.clip.motion}
-                  clipElapsedSec={progClipElapsed}
-                  clipDurationSec={currentEntry.effDur}
-                  videoRef={progVideoRef}
-                  muted={previewMuted || currentEntry.clip.muted}
-                  onTimeUpdate={handleProgramVideoTimeUpdate}
-                  onLoadedMetadata={() => {
-                    if (progVideoRef.current) {
-                      const spd = currentEntry.clip.speed || 1;
-                      progVideoRef.current.playbackRate = spd;
-                      progVideoRef.current.currentTime =
-                        (currentEntry.clip.trimStart || 0) + progClipElapsed * spd;
-                      if (isPlaying) {
-                        progVideoRef.current.play().catch(() => {});
-                      }
-                    }
-                  }}
-                />
+                {previewLayers.map(layer => {
+                  const entry = playableClips[layer.index];
+                  return <SequenceClipLayer key={entry.clip.id} clip={entry.clip} asset={entry.asset}
+                    duration={entry.effDur} elapsed={layer.elapsed} playing={isPlaying && globalProgramTime >= timeline.segments[layer.index].start}
+                    muted={previewMuted} gain={layer.audioGain * (activeGroup?.clipMasterVolume ?? 1)}
+                    aspectRatio={aspectRatio} masterSpeedFactor={masterSpeedFactor} style={layer.style} />;
+                })}
                 {activeGroup?.dedup?.enabled && activeGroup.dedup.vignette && (
                   <div
                     className="pointer-events-none absolute inset-0"
@@ -681,48 +517,9 @@ export const PlayerMonitor: React.FC<Props> = ({
                 showSafeZone={showSafeZone}
               />
 
-              {bgmAsset && (
-                <audio
-                  ref={bgmAudioRef}
-                  src={bgmAsset.url}
-                  loop={activeGroup?.bgmLoop !== false}
-                  preload="auto"
-                  onTimeUpdate={(e) => {
-                    const bgmStart = activeGroup?.bgmTrimStart ?? bgmAsset.defaultTrimStart ?? 0;
-                    const bgmEnd =
-                      activeGroup?.bgmTrimEnd || bgmAsset.defaultTrimEnd || bgmAsset.duration;
-                    if (e.currentTarget.currentTime >= bgmEnd - 0.04) {
-                      if (activeGroup?.bgmLoop !== false) {
-                        e.currentTarget.currentTime = bgmStart;
-                      } else {
-                        e.currentTarget.pause();
-                      }
-                    }
-                  }}
-                />
-              )}
+              {bgmAsset && <audio ref={bgmAudioRef} src={bgmAsset.url} preload="auto" />}
+              {voAsset && <audio ref={voAudioRef} src={voAsset.url} preload="auto" />}
 
-              {voAsset && (
-                <audio
-                  ref={voAudioRef}
-                  src={voAsset.url}
-                  preload="auto"
-                  onTimeUpdate={(e) => {
-                    const voEnd =
-                      activeGroup?.voiceoverTrimEnd || voAsset.defaultTrimEnd || voAsset.duration;
-                    if (e.currentTarget.currentTime >= voEnd - 0.04) {
-                      e.currentTarget.pause();
-                      // Restore BGM volume when voiceover ends!
-                      if (bgmAudioRef.current && !previewMuted) {
-                        bgmAudioRef.current.volume = Math.min(
-                          1,
-                          Math.max(0, activeGroup?.bgmVolume ?? 0.35)
-                        );
-                      }
-                    }
-                  }}
-                />
-              )}
             </div>
           ) : (
             <div className="text-center max-w-xs space-y-2 text-[#7E8596] px-4">
@@ -828,7 +625,19 @@ export const PlayerMonitor: React.FC<Props> = ({
         {mode === 'program' ? (
           <>
             <div
+              role="slider"
+              aria-label="成片预览进度"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(totalProgramDur / masterSpeedFactor * 1000) / 1000}
+              aria-valuenow={Math.round(globalProgramTime / masterSpeedFactor * 1000) / 1000}
+              tabIndex={0}
               className="relative h-2 rounded-full bg-[#232633] overflow-hidden cursor-pointer flex gap-0.5"
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowRight') { e.preventDefault(); seekProgramGlobal(globalProgramTime + 0.5); }
+                else if (e.key === 'ArrowLeft') { e.preventDefault(); seekProgramGlobal(globalProgramTime - 0.5); }
+                else if (e.key === 'Home') { e.preventDefault(); seekProgramGlobal(0); }
+                else if (e.key === 'End') { e.preventDefault(); seekProgramGlobal(totalProgramDur); }
+              }}
               onClick={(e) => {
                 if (totalProgramDur <= 0) return;
                 const rect = e.currentTarget.getBoundingClientRect();
@@ -837,16 +646,12 @@ export const PlayerMonitor: React.FC<Props> = ({
               }}
             >
               {playableClips.map((entry, idx) => {
-                const widthPct = totalProgramDur > 0 ? (entry.effDur / totalProgramDur) * 100 : 0;
-                return (
-                  <div
-                    key={entry.clip.id}
-                    style={{ width: `${widthPct}%` }}
-                    className={`h-full ${
-                      idx === progClipIdx ? 'bg-[#2E3548]' : 'bg-[#1F2330]'
-                    } border-r border-black/50 last:border-r-0`}
-                  />
-                );
+                const start = timeline.segments[idx].start;
+                const left = totalProgramDur > 0 ? (start / totalProgramDur) * 100 : 0;
+                const width = totalProgramDur > 0 ? (entry.effDur / totalProgramDur) * 100 : 0;
+                return <div key={entry.clip.id} style={{ left: `${left}%`, width: `${width}%` }} className={`absolute inset-y-0 ${
+                  idx === progClipIdx ? 'bg-[#2E3548]' : 'bg-[#1F2330]'
+                } border-r border-black/50 last:border-r-0`} />;
               })}
               <div
                 className="absolute inset-y-0 left-0 bg-gradient-to-r from-[#00E5FF] to-[#00B8D9] pointer-events-none"
@@ -862,9 +667,9 @@ export const PlayerMonitor: React.FC<Props> = ({
 
             <div className="flex items-center justify-between text-xs gap-2">
               <span className="font-mono text-[11px] text-[#9CA3AF] whitespace-nowrap">
-                <strong className="text-white">{formatDuration(globalProgramTime)}</strong>
+                <strong className="text-white">{formatDuration(globalProgramTime / masterSpeedFactor)}</strong>
                 <span className="text-[#5E6577]"> / </span>
-                {formatDuration(totalProgramDur)}
+                {formatDuration(totalProgramDur / masterSpeedFactor)}
               </span>
 
               <div className="flex items-center gap-1.5 shrink-0">
@@ -891,9 +696,7 @@ export const PlayerMonitor: React.FC<Props> = ({
                 <button
                   onClick={() => {
                     if (progClipIdx < playableClips.length - 1) {
-                      let nextStart = 0;
-                      for (let i = 0; i <= progClipIdx; i++) nextStart += playableClips[i].effDur;
-                      seekProgramGlobal(nextStart + 0.01);
+                      seekProgramGlobal(timeline.segments[progClipIdx + 1].start + 0.001);
                     }
                   }}
                   disabled={progClipIdx >= playableClips.length - 1}
