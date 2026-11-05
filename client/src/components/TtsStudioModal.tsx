@@ -383,65 +383,64 @@ export const TtsStudioModal: React.FC<Props> = ({
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 select-none">
       <div className="w-full max-w-5xl max-h-[92vh] rounded-2xl bg-[#151821] border border-[#2D3348] shadow-2xl flex flex-col overflow-hidden">
-        {/* Unified Studio Header with Dual Tabs + AI Settings Button */}
-        <div className="px-5 py-3 bg-[#11131B] border-b border-[#252A3A] flex items-center justify-between gap-3 shrink-0 flex-wrap">
-          <div className="flex items-center gap-3">
+        {/* Unified Studio Header — Single Non-Wrapping Row with Top-Right Close Button */}
+        <div className="px-5 py-3 bg-[#11131B] border-b border-[#252A3A] flex items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00E5FF] to-[#7C3AED] flex items-center justify-center text-white shadow shrink-0">
               <Sparkles className="w-4 h-4" />
             </div>
-            <div>
-              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <div className="min-w-0">
+              <h2 className="text-sm font-bold text-white flex items-center gap-2 whitespace-nowrap">
                 <span>AI 脚本裂变与智能配音中心</span>
                 <span className="px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] text-[10px] font-mono">
-                  v2.2 全链路
+                  v2.3 全链路
                 </span>
               </h2>
-              <p className="text-[11px] text-[#8A90A2]">
-                卖点裂变爆款脚本与花字 → 神经语音合成 + 24kHz 去气口 → 自动对齐动态字幕灌入视频组
+              <p className="text-[11px] text-[#8A90A2] truncate">
+                卖点裂变脚本花字 → 神经配音去气口 → 动态字幕灌入视频组
               </p>
             </div>
           </div>
 
-          {/* Center Dual-Tab Switcher */}
-          <div className="flex items-center bg-[#0B0D13] p-1 rounded-xl border border-[#272D42]">
-            <button
-              type="button"
-              onClick={() => {
-                setShowSettingsDrawer(false);
-                setStudioTab('ai_script');
-              }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition ${
-                !showSettingsDrawer && studioTab === 'ai_script'
-                  ? 'bg-gradient-to-r from-[#00E5FF]/20 to-purple-500/20 text-[#00E5FF] border border-[#00E5FF]/40'
-                  : 'text-[#8A90A2] hover:text-white'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              1. AI 爆款脚本裂变
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowSettingsDrawer(false);
-                setStudioTab('tts');
-              }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition ${
-                !showSettingsDrawer && studioTab === 'tts'
-                  ? 'bg-[#FFB800]/18 text-[#FFB800] border border-[#FFB800]/40'
-                  : 'text-[#8A90A2] hover:text-white'
-              }`}
-            >
-              <Mic className="w-3.5 h-3.5" />
-              2. 语音合成 & 去气口
-            </button>
-          </div>
+          {/* Right Controls: Dual-Tab Switcher + AI Engine Config + Top-Right Close */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center bg-[#0B0D13] p-1 rounded-xl border border-[#272D42]">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSettingsDrawer(false);
+                  setStudioTab('ai_script');
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition ${
+                  !showSettingsDrawer && studioTab === 'ai_script'
+                    ? 'bg-gradient-to-r from-[#00E5FF]/20 to-purple-500/20 text-[#00E5FF] border border-[#00E5FF]/40'
+                    : 'text-[#8A90A2] hover:text-white'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                1. AI 爆款脚本裂变
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSettingsDrawer(false);
+                  setStudioTab('tts');
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition ${
+                  !showSettingsDrawer && studioTab === 'tts'
+                    ? 'bg-[#FFB800]/18 text-[#FFB800] border border-[#FFB800]/40'
+                    : 'text-[#8A90A2] hover:text-white'
+                }`}
+              >
+                <Mic className="w-3.5 h-3.5 shrink-0" />
+                2. 语音合成 & 去气口
+              </button>
+            </div>
 
-          {/* Right: AI Engine Config + Close */}
-          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => setShowSettingsDrawer((s) => !s)}
-              className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition ${
+              className={`h-8 px-3 rounded-lg border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition ${
                 showSettingsDrawer
                   ? 'bg-[#00E5FF]/20 border-[#00E5FF] text-[#00E5FF]'
                   : hasCloudKeyConfigured
@@ -449,17 +448,21 @@ export const TtsStudioModal: React.FC<Props> = ({
                   : 'bg-[#1D2232] border-[#323A54] text-[#CBD5E1] hover:text-white'
               }`}
             >
-              <KeyRound className="w-3.5 h-3.5" />
+              <KeyRound className="w-3.5 h-3.5 shrink-0" />
               <span>
                 {hasCloudKeyConfigured
                   ? `已接入 ${AI_PROVIDER_PRESETS[aiSettings.providerId]?.name.split(' ')[0]}`
-                  : '配置大模型 / ASR Key'}
+                  : '配置 Key'}
               </span>
             </button>
 
+            <div className="h-4 w-px bg-[#283048] shrink-0" />
+
             <button
+              type="button"
               onClick={onClose}
-              className="p-1.5 rounded-lg hover:bg-[#252A3A] text-[#9CA3AF] hover:text-white transition"
+              title="关闭窗口"
+              className="w-8 h-8 rounded-lg bg-[#1A1E2B] hover:bg-red-500/20 border border-[#2B3247] hover:border-red-500/40 text-[#9CA3AF] hover:text-red-300 flex items-center justify-center shrink-0 transition"
             >
               <X className="w-4 h-4" />
             </button>
